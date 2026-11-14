@@ -90,6 +90,7 @@ fn capabilities_describe_only_implemented_operations() {
             "ingress.reconcile",
             "runtime.activateConfig",
             "runtime.patchStatus",
+            "runtime.patchUpdate",
             "runtime.removeConfig",
             "runtime.reconcile",
             "cron.installTab",

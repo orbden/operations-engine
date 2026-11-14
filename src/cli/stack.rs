@@ -4,6 +4,17 @@ use clap::Subcommand;
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeCommand {
+    /// Move one managed container to a newer image of the same release
+    /// line (a patch), after explicit confirmation. Manual only.
+    PatchUpdate {
+        /// Root-owned JSON file: service, image, resolvedVersion, sites, confirm.
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
     /// Report each managed container's running version and whether the
     /// candidate images named in the request are a patch, a minor/major
     /// jump or already running (local, read-only).
@@ -373,6 +384,7 @@ impl RuntimeCommand {
             Self::RemoveConfig { .. } => "runtime.removeConfig",
             Self::Reconcile { .. } => "runtime.reconcile",
             Self::PatchStatus { .. } => "runtime.patchStatus",
+            Self::PatchUpdate { .. } => "runtime.patchUpdate",
         }
     }
 }

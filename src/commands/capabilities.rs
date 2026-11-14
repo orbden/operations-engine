@@ -137,6 +137,7 @@ pub const OPERATIONS: &[&str] = &[
     "ingress.reconcile",
     "runtime.activateConfig",
     "runtime.patchStatus",
+    "runtime.patchUpdate",
     "runtime.removeConfig",
     "runtime.reconcile",
     "cron.installTab",
