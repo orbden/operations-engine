@@ -52,6 +52,8 @@ use crate::{
     },
 };
 
+pub mod patch;
+
 pub const OPERATION: &str = "stack.deploy";
 
 /// Engine-state scope shared by every operation on the WCP stack.

@@ -137,6 +137,39 @@ pub fn prepare(
         .map_err(|_| Error::Unavailable)
 }
 
+/// Releases a deploy or rollback checkpoint still names (its target and the
+/// release that was current before it), for a caller that must not delete
+/// them. Refuses (`Conflict`) while any checkpoint belongs to an unfinished
+/// transaction, and (`Unavailable`) when a checkpoint or its transaction
+/// cannot be read: an unknown state is never treated as "nothing is
+/// referenced". A missing `deployment-recovery` directory means no deploy
+/// ever ran, so nothing is referenced.
+pub fn referenced_releases(scope: &ManagedRoot) -> Result<Vec<ReleaseId>, Error> {
+    let dir = SiteRelativePath::parse("deployment-recovery").unwrap();
+    let markers = match scope.open_managed_dir(&dir) {
+        Ok(markers) => markers,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(Error::Unavailable),
+    };
+    let mut referenced = Vec::new();
+    for name in markers.file_names().map_err(|_| Error::Unavailable)? {
+        let Some(id) = name
+            .strip_suffix(".json")
+            .and_then(|s| RequestId::parse(s).ok())
+        else {
+            return Err(Error::Unavailable);
+        };
+        let record = state::load(scope, &state_path(id)).map_err(|_| Error::Unavailable)?;
+        if record.status == TransactionStatus::InProgress {
+            return Err(Error::Conflict);
+        }
+        let checkpoint = load(scope, id)?;
+        referenced.push(checkpoint.target);
+        referenced.extend(checkpoint.previous);
+    }
+    Ok(referenced)
+}
+
 pub fn available(scope: &ManagedRoot, record: &state::TransactionState) -> bool {
     record.status == TransactionStatus::InProgress
         && matches!(record.operation.as_str(), "site.deploy" | "site.rollback")

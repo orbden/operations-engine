@@ -119,7 +119,16 @@ pub struct SiteManifest {
     pub content_root: SiteRelativePath,
     pub site_user: String,
     pub repository: RepositoryPolicy,
+    /// How many of the newest releases a site keeps (`keepReleases`,
+    /// optional in the manifest). Deploy, rollback and `releases.prune` all
+    /// read this one value.
+    pub keep_releases: usize,
 }
+
+/// What a manifest without `keepReleases` keeps.
+pub const DEFAULT_KEEP_RELEASES: usize = 5;
+/// The largest `keepReleases` the engine accepts.
+pub const MAX_KEEP_RELEASES: usize = 100;
 
 impl SiteManifest {
     #[cfg(unix)]
@@ -160,7 +169,14 @@ impl SiteManifest {
             validate_bounded_text(branch, 255)?;
         }
 
+        let keep_releases = match raw.keep_releases {
+            None => DEFAULT_KEEP_RELEASES,
+            Some(value) if (1..=MAX_KEEP_RELEASES as u64).contains(&value) => value as usize,
+            Some(_) => return Err(ConfigError::InvalidPolicyValue),
+        };
+
         Ok(Self {
+            keep_releases,
             site_id,
             domain: raw.domain,
             content_root: SiteRelativePath::parse(raw.content_root)?,
@@ -203,6 +219,8 @@ struct RawSiteManifest {
     content_root: String,
     site_user: String,
     repository: RawRepositoryPolicy,
+    #[serde(default)]
+    keep_releases: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -477,6 +495,29 @@ mod tests {
                 EngineConfig::from_json(&overlapping).unwrap_err(),
                 ConfigError::PrivilegedRootOverlapsContent,
                 "siteServicesRoot {other} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn keep_releases_defaults_to_five_and_accepts_one_to_one_hundred() {
+        let expected = SiteId::parse(SITE_ID).expect("site id should be canonical");
+        let default = SiteManifest::from_json_for_site(&manifest_json(), expected)
+            .expect("manifest should be valid");
+        assert_eq!(default.keep_releases, 5);
+
+        let with = |value: &str| {
+            manifest_json().replace(
+                "\"siteUser\"",
+                &format!("\"keepReleases\": {value}, \"siteUser\""),
+            )
+        };
+        let set = SiteManifest::from_json_for_site(&with("12"), expected).expect("12 is valid");
+        assert_eq!(set.keep_releases, 12);
+        for bad in ["0", "101", "-1", "\"5\"", "2.5"] {
+            assert!(
+                SiteManifest::from_json_for_site(&with(bad), expected).is_err(),
+                "{bad} must be refused"
             );
         }
     }
