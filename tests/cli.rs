@@ -88,6 +88,7 @@ fn capabilities_describe_only_implemented_operations() {
             "ingress.applyAdminPaths",
             "ingress.reconcile",
             "runtime.activateConfig",
+            "runtime.patchStatus",
             "runtime.removeConfig",
             "runtime.reconcile",
             "cron.installTab",

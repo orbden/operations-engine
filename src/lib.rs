@@ -81,8 +81,9 @@ pub mod protocol;
 pub mod recovery_evidence;
 pub mod rollback;
 pub mod runtime_config;
-pub mod secret_result;
 #[cfg(unix)]
+pub mod runtime_patch_status;
+pub mod secret_result;
 pub mod security_affected;
 pub mod security_baseline;
 pub mod security_feed;

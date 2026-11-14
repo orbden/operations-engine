@@ -26,6 +26,7 @@ const CONFIG_PATH: &str = "/etc/operations-engine/config.json";
 
 pub fn run(command: RuntimeCommand) -> Result<Response, ResponseBuildError> {
     match command {
+        RuntimeCommand::PatchStatus { request_file } => patch_status(&request_file),
         RuntimeCommand::ActivateConfig {
             runtime_id,
             domain,
@@ -59,6 +60,46 @@ pub fn run(command: RuntimeCommand) -> Result<Response, ResponseBuildError> {
             request_id,
             idempotency_key,
         } => reconcile(&runtime_id, &request_id, idempotency_key.as_deref()),
+    }
+}
+
+fn patch_status(path: &std::path::Path) -> Result<Response, ResponseBuildError> {
+    use crate::runtime_patch_status as patch;
+    #[cfg(unix)]
+    {
+        let Ok(json) = crate::commands::read_root_owned_content_file(path) else {
+            return Ok(Response::failure(
+                patch::OPERATION,
+                ErrorCode::InvalidInput,
+                "request-file must be a root-owned regular file",
+            ));
+        };
+        let request = match patch::Request::parse(&json) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(Response::failure(
+                    patch::OPERATION,
+                    ErrorCode::InvalidInput,
+                    error.message(),
+                ));
+            }
+        };
+        Response::success(
+            patch::OPERATION,
+            patch::evaluate(
+                &crate::security_affected::Docker { program: "docker" },
+                &request,
+            ),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(Response::failure(
+            patch::OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "runtime patch status requires a Unix host",
+        ))
     }
 }
 

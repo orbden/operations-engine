@@ -1017,6 +1017,20 @@ The install runs with `DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=l` (ne
 
 The result lists, per package, the installed version before and after (`dpkg-query`) and `upgraded`, `unchanged` or `unknown` (a version that could not be read is never reported as unchanged), `completion` (`complete`, or `partial` when `apt-get` failed after some packages had changed; a failure that changed nothing is `SUBPROCESS_FAILED`) and `reboot` (`required`, `notRequired` or `unknown`, as in `system.updatesStatus`). A replay of a finished request returns the recorded result, and of a failed one the recorded failure, without running apt again. Linux hosts only.
 
+## `runtime.patchStatus`
+
+`runtime patch-status --request-file <file>` reports, for every container of the managed stack (compose project `wcp`), the full version it runs and how a caller-named candidate image compares. It is local and read-only: it asks the local Docker daemon and fetches nothing. The root-owned request file is `{"candidates":[{"service","digest","resolvedVersion"}]}` (at most 64, unique `service`, `digest` as `sha256:<64 hex>`, `resolvedVersion` dotted numeric; `digest` and `resolvedVersion` are optional; unknown keys are refused).
+
+Per service the result carries `kind` (`frankenphp`, `mariadb`, `valkey`, `postgres`, `meilisearch`, or `null` for an image outside the catalog prefix), `runningVersion`, the registry digests and `status` with a `reason`:
+
+- `upToDate`: the container's image already has the candidate digest.
+- `patchPending`: same major.minor and a higher patch (`newerPatch`), or the same version in a new image (`sameVersionNewImage`).
+- `minorOrMajor`: the candidate is another, higher major.minor line (`differentLine`). Never offered as a patch.
+- `unknown`: no candidate, no candidate digest or version, the running version could not be read, a candidate older than what runs, or an image Docker cannot inspect. Never reported as up to date.
+- `manual`: not an image of the engine's catalog.
+
+The running version comes from the image the container was created from (the OCI version label, then the official image's version variable), never from running anything in the container. FrankenPHP images report the PHP version, so without a matching candidate version they can only be `upToDate` or `unknown`. If Docker cannot list the stack, `inventory` is `unavailable` and there are no rows. Nothing is changed.
+
 ## `security.setPolicy`, `security.refresh`, `security.status`, `security.history`, `security.affected`
 
 A check-only consumer of the public security feed. Nothing is fetched unless the
