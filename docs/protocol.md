@@ -259,12 +259,50 @@ next entry.
 The engine journals its own operations (`source: "engine"`, `actor:
 "engine"`, the request id as entry id and `operationId`) for the ones whose
 identity is on the command line: `site.deploy`, `site.rollback`,
-`site.renameManifest`, `site.unenroll`, `engine.install` and
-`engine.rollback`. The write is best effort and never changes the operation's
+`site.renameManifest`, `site.unenroll`, `releases.prune` (delete only),
+`engine.install` and `engine.rollback`. The write is best effort and never changes the operation's
 response; an operation rejected as `INVALID_INPUT` is not journaled. Other
 mutating operations are not journaled yet (they name their target in a
 request file or by domain, and need their own secret-free way to name the
 site); they are listed in the CMS-core design notes as a follow-up.
+
+## `releases.prune`
+
+Deletes old release directories of an engine-deployed site
+(`sites/<siteId>/releases/<releaseId>`), in two steps:
+`ops-engine site prune-releases --site-id <uuid> [--confirm <releaseId>]...
+--request-id <uuid> [--idempotency-key <key>]`.
+
+- **Preview** (no `--confirm`): `result.candidates` lists the old releases a
+  delete may remove (`releaseId`, `modifiedAtUnixSecs`, `sizeBytes`, `null`
+  when it could not be measured), `result.kept` names every other release with
+  its reason (`active`, `newest`, `rollback`), `ignoredEntries` counts entries
+  that are not release directories, `totalBytes` sums the candidates. Nothing
+  is changed and nothing is journaled.
+- **Delete** (one `--confirm` per directory, the exact canonical release name,
+  at most 100): removes exactly those directories. It recomputes the plan
+  under the site's mutation lock and refuses the whole request (`CONFLICT`,
+  nothing removed) when any confirmed directory is not an old release. A
+  confirmed directory that is already gone is reported in `alreadyAbsent`, so a
+  repeat succeeds; the same idempotency key replays the recorded result.
+
+Never a candidate: the release `current` points at, the newest `keepReleases`
+releases (an optional integer 1 to 100 in the site manifest, default 5; deploy
+and rollback use the same value for their own retention, ordered by the
+directory's modification time), every release a deploy or rollback checkpoint
+still names (its target and the release that was current before it, the
+rollback target), and anything that is not a canonical-UUID directory (other
+names, symlinks, files; they are only counted).
+
+It refuses with `CONFLICT` and changes nothing when a deploy or rollback is in
+progress or unfinished, when the site lock is held, when `current` is missing,
+is not a `releases/<id>` link or names a release that is not on disk, when a
+checkpoint cannot be read, or when `sites`, the site directory or `releases`
+is a symlink. The releases directory is reached one no-follow step at a time
+and entries are only handled by name inside it; sizes are measured without
+following links, and a link inside a release is removed as a link. The
+transaction record and audit entry carry no paths or secrets; the change
+journal gets one `releases.prune` entry per delete.
 
 ## `ingress.applyAdminPaths`
 

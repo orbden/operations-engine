@@ -177,6 +177,12 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             &request_id,
             idempotency_key.as_deref(),
         ),
+        SiteCommand::PruneReleases {
+            site_id,
+            confirm,
+            request_id,
+            idempotency_key,
+        } => prune_releases(&site_id, &confirm, &request_id, idempotency_key.as_deref()),
         SiteCommand::RenameManifest {
             site_id,
             domain,
@@ -642,6 +648,113 @@ fn run_enrollment(
         Err(error) => {
             let (code, message) = error.protocol();
             Ok(Response::failure(operation, code, &message))
+        }
+    }
+}
+
+fn prune_releases(
+    site_id: &str,
+    confirm: &[String],
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::releases_prune::{OPERATION, Request};
+
+    let request = match Request::parse(site_id, confirm, request_id, idempotency_key) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(Response::failure(
+                OPERATION,
+                ErrorCode::InvalidInput,
+                error.message(),
+            ));
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        run_prune_releases(&request)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        Ok(Response::failure(
+            OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "releases.prune requires a Unix host",
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn run_prune_releases(
+    request: &crate::releases_prune::Request,
+) -> Result<Response, ResponseBuildError> {
+    use std::path::Path;
+
+    use crate::{
+        config::{EngineConfig, SiteManifest},
+        filesystem::ManagedRoot,
+        releases_prune::{self, OPERATION},
+    };
+
+    let Ok(engine_config) = EngineConfig::load_root_owned(Path::new(CONFIG_PATH)) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+        ));
+    };
+    let manifest_path = Path::new(SITES_DIR).join(format!("{}.json", request.site_id));
+    let Ok(manifest) = SiteManifest::load_root_owned(&manifest_path, request.site_id) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::InvalidInput,
+            "site is not configured or its manifest could not be loaded",
+        ));
+    };
+    let [content_root] = engine_config.content_roots.as_slice() else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "engine configuration must have exactly one content root for this build",
+        ));
+    };
+    let Ok(engine_state) = ManagedRoot::open(&engine_config.state_root) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "engine state root is unavailable",
+        ));
+    };
+    let context = releases_prune::Context {
+        content_root,
+        engine_state: &engine_state,
+    };
+
+    if request.is_preview() {
+        return match releases_prune::preview(&context, &manifest, request) {
+            Ok(result) => Response::success(OPERATION, result),
+            Err(error) => {
+                let (code, message) = error.protocol();
+                Ok(Response::failure(OPERATION, code, &message))
+            }
+        };
+    }
+    match releases_prune::execute(&context, &manifest, request) {
+        Ok(result) => Response::success(OPERATION, result),
+        Err(releases_prune::Error::PostCommit { result }) => Response::success(OPERATION, result)
+            .map(|response| {
+                response.with_warnings(vec![Warning {
+                    code: WarningCode::TransactionRecordIncomplete,
+                    message: "the operation completed but its transaction record could not be \
+                              saved"
+                        .to_owned(),
+                }])
+            }),
+        Err(error) => {
+            let (code, message) = error.protocol();
+            Ok(Response::failure(OPERATION, code, &message))
         }
     }
 }

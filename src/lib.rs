@@ -79,6 +79,7 @@ pub mod process;
 pub mod protocol;
 #[cfg(unix)]
 pub mod recovery_evidence;
+pub mod releases_prune;
 pub mod rollback;
 pub mod runtime_config;
 #[cfg(unix)]

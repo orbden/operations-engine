@@ -15,7 +15,7 @@ use crate::{
 
 /// How many releases a site keeps by default: the active one plus enough
 /// history to roll back a few deploys without engine involvement.
-pub const DEFAULT_RETAIN_COUNT: usize = 5;
+pub const DEFAULT_RETAIN_COUNT: usize = crate::config::DEFAULT_KEEP_RELEASES;
 
 /// Removes releases beyond the `retain` most recently created, always
 /// keeping `active_release` regardless of its age or position. Age is the

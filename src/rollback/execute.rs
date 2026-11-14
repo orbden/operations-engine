@@ -304,7 +304,7 @@ pub fn execute(
         context.content_root,
         request.site_id,
         request.release_id,
-        cleanup::DEFAULT_RETAIN_COUNT,
+        manifest.keep_releases,
     );
 
     Ok(result)

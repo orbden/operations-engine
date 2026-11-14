@@ -383,7 +383,7 @@ pub fn execute(
         context.content_root,
         request.site_id,
         release_id,
-        cleanup::DEFAULT_RETAIN_COUNT,
+        manifest.keep_releases,
     );
 
     Ok(result)
