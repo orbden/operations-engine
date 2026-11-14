@@ -700,7 +700,7 @@ fn deploy(
 /// created and re-owned through a capability on the home directory, so a
 /// symlink cannot point the change elsewhere.
 #[cfg(unix)]
-fn prepare_stack_root() -> Option<(crate::site::TrustedRoot, Option<(u32, u32)>)> {
+pub(crate) fn prepare_stack_root() -> Option<(crate::site::TrustedRoot, Option<(u32, u32)>)> {
     use std::os::unix::fs::MetadataExt;
 
     use crate::{

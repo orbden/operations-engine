@@ -27,6 +27,11 @@ const CONFIG_PATH: &str = "/etc/operations-engine/config.json";
 pub fn run(command: RuntimeCommand) -> Result<Response, ResponseBuildError> {
     match command {
         RuntimeCommand::PatchStatus { request_file } => patch_status(&request_file),
+        RuntimeCommand::PatchUpdate {
+            request_file,
+            request_id,
+            idempotency_key,
+        } => patch_update(&request_file, &request_id, idempotency_key.as_deref()),
         RuntimeCommand::ActivateConfig {
             runtime_id,
             domain,
@@ -101,6 +106,102 @@ fn patch_status(path: &std::path::Path) -> Result<Response, ResponseBuildError> 
             "runtime patch status requires a Unix host",
         ))
     }
+}
+
+#[cfg(unix)]
+fn patch_update(
+    path: &std::path::Path,
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::{
+        config::EngineConfig,
+        filesystem::ManagedRoot,
+        stack_deploy::{
+            Context, Timing,
+            patch::{self, PatchError},
+        },
+    };
+    const OPERATION: &str = patch::OPERATION;
+    let Ok(config) = EngineConfig::load_root_owned(std::path::Path::new(CONFIG_PATH)) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+        ));
+    };
+    let Ok(json) = crate::commands::read_root_owned_content_file(path) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::InvalidInput,
+            "request-file must be a root-owned regular file",
+        ));
+    };
+    let request = match patch::Request::parse(&json, request_id, idempotency_key) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(Response::failure(
+                OPERATION,
+                ErrorCode::InvalidInput,
+                error.message(),
+            ));
+        }
+    };
+    if !cfg!(target_os = "linux") {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "runtime patch update requires a Linux host",
+        ));
+    }
+    let Ok(engine_state) = ManagedRoot::open(&config.state_root) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "engine state root is unavailable",
+        ));
+    };
+    let Some((stack_root, owner)) = crate::commands::stack::prepare_stack_root() else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "stack directory is unavailable",
+        ));
+    };
+    let context = Context {
+        engine_state: &engine_state,
+        stack_root: &stack_root,
+        docker: "docker",
+        timing: Timing::PRODUCTION,
+        owner,
+    };
+    match patch::execute(&context, &request, &CancellationToken::default()) {
+        Ok(result) => Response::success(OPERATION, result),
+        Err(PatchError::PostCommit { result }) => Response::success(OPERATION, result).map(|r| {
+            r.with_warnings(vec![Warning {
+                code: WarningCode::TransactionRecordIncomplete,
+                message: "the service was updated but its transaction record could not be saved"
+                    .to_owned(),
+            }])
+        }),
+        Err(error) => {
+            let (code, message) = error.protocol();
+            Ok(Response::failure(OPERATION, code, &message))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn patch_update(
+    _path: &std::path::Path,
+    _request_id: &str,
+    _idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    Ok(Response::failure(
+        "runtime.patchUpdate",
+        ErrorCode::UnsupportedPlatform,
+        "runtime patch update requires a Linux host",
+    ))
 }
 
 fn remove_config(
