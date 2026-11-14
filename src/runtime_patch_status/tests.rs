@@ -262,3 +262,16 @@ fn parses_docker_output() {
     assert_eq!(facts.label_version.as_deref(), Some("9.1.3"));
     assert!(parse_services(b"nope").is_none());
 }
+
+#[test]
+fn postgres_minor_releases_are_patches_of_the_major_line() {
+    const PG: &str = "ghcr.io/local-control-panel/postgres:18@sha256:aaaa";
+    let f = facts(&['b'], Some(("PG_VERSION", "18.1")), None);
+    let row = one(PG, f.clone(), Some(cand(Some('c'), Some("18.2"))));
+    assert_eq!(
+        (row.status, row.reason),
+        (Status::PatchPending, "newerPatch")
+    );
+    let row = one(PG, f, Some(cand(Some('c'), Some("19.0"))));
+    assert_eq!(row.status, Status::MinorOrMajor);
+}

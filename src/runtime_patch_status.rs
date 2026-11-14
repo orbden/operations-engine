@@ -247,7 +247,14 @@ fn running_version(kind: &str, facts: &ImageFacts) -> Option<String> {
     )
 }
 
+/// How many leading version components name the release line. PostgreSQL
+/// numbers its minor releases `18.1`, `18.2`: they are patches of line `18`.
+fn line_len(kind: &str) -> usize {
+    if kind == "postgres" { 1 } else { 2 }
+}
+
 fn judge(
+    kind: &str,
     running: Option<&Vec<u32>>,
     facts: &ImageFacts,
     candidate: Option<&Candidate>,
@@ -274,8 +281,9 @@ fn judge(
     if candidate_version.len() < 2 || running.len() < 2 {
         return (Status::Unknown, "candidateVersionUnknown");
     }
-    if candidate_version[..2] != running[..2] {
-        return if candidate_version[..2] > running[..2] {
+    let line = line_len(kind);
+    if candidate_version[..line] != running[..line] {
+        return if candidate_version[..line] > running[..line] {
             (Status::MinorOrMajor, "differentLine")
         } else {
             (Status::Unknown, "candidateOlder")
@@ -311,7 +319,7 @@ pub fn evaluate(docker: &dyn Inventory, request: &Request) -> PatchStatus {
         let (status, reason) = match (kind, facts.as_ref()) {
             (None, _) => (Status::Manual, "notManagedImage"),
             (Some(_), None) => (Status::Unknown, "imageUnreadable"),
-            (Some(_), Some(facts)) => judge(parsed.as_ref(), facts, candidate),
+            (Some(kind), Some(facts)) => judge(kind, parsed.as_ref(), facts, candidate),
         };
         result.services.push(Row {
             service: service.service,
