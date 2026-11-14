@@ -169,7 +169,7 @@ pub struct Docker<'a> {
 }
 
 impl Docker<'_> {
-    fn run(&self, args: &[&str]) -> Result<Vec<u8>, Unavailable> {
+    pub(crate) fn run(&self, args: &[&str]) -> Result<Vec<u8>, Unavailable> {
         let output = process::run(
             &ProcessRequest::new(self.program).args(args),
             &ProcessLimits {
@@ -189,7 +189,7 @@ impl Docker<'_> {
     }
 }
 
-fn image_id_ok(id: &str) -> bool {
+pub(crate) fn image_id_ok(id: &str) -> bool {
     id.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
             && hex

@@ -135,6 +135,7 @@ pub const OPERATIONS: &[&str] = &[
     "ingress.applyAdminPaths",
     "ingress.reconcile",
     "runtime.activateConfig",
+    "runtime.patchStatus",
     "runtime.removeConfig",
     "runtime.reconcile",
     "cron.installTab",

@@ -4,6 +4,14 @@ use clap::Subcommand;
 
 #[derive(Debug, Subcommand)]
 pub enum RuntimeCommand {
+    /// Report each managed container's running version and whether the
+    /// candidate images named in the request are a patch, a minor/major
+    /// jump or already running (local, read-only).
+    PatchStatus {
+        /// Root-owned JSON file: `{"candidates":[{"service","digest","resolvedVersion"}]}`.
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+    },
     /// Atomically replace one site's runtime-service Caddyfile fragment,
     /// validating the new content before it can reach the live path and
     /// restoring the previous content if the live reload rejects it.
@@ -364,6 +372,7 @@ impl RuntimeCommand {
             Self::ActivateConfig { .. } => "runtime.activateConfig",
             Self::RemoveConfig { .. } => "runtime.removeConfig",
             Self::Reconcile { .. } => "runtime.reconcile",
+            Self::PatchStatus { .. } => "runtime.patchStatus",
         }
     }
 }
