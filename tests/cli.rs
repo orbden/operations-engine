@@ -71,6 +71,7 @@ fn capabilities_describe_only_implemented_operations() {
             "site.removeRoot",
             "site.releaseRoot",
             "site.renameManifest",
+            "releases.prune",
             "site.enroll",
             "site.unenroll",
             "site.allocateIdentity",
@@ -643,4 +644,29 @@ fn admin_login_requires_an_idempotency_key_and_never_returns_a_secret_on_failure
     let response = journal_failure(&["drupal", "watchdog", "--request-file", "/nonexistent"]);
     assert_eq!(response["operation"], "drupal.watchdog");
     assert_eq!(response["ok"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn prune_releases_rejects_an_invalid_site_and_a_traversal_name_before_touching_anything() {
+    let id = "123e4567-e89b-12d3-a456-426614174000";
+    for (site, confirm, message) in [
+        ("nope", None, "site-id is not a canonical UUID"),
+        (
+            id,
+            Some("../etc"),
+            "confirm must be the exact name of a release directory",
+        ),
+    ] {
+        let mut args = vec!["site", "prune-releases", "--site-id", site];
+        if let Some(confirm) = confirm {
+            args.extend(["--confirm", confirm]);
+        }
+        args.extend(["--request-id", id]);
+        let response = journal_failure(&args);
+        assert_eq!(response["operation"], "releases.prune");
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "INVALID_INPUT");
+        assert_eq!(response["error"]["message"], message);
+    }
 }

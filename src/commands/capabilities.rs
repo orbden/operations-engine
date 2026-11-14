@@ -118,6 +118,7 @@ pub const OPERATIONS: &[&str] = &[
     "site.removeRoot",
     "site.releaseRoot",
     "site.renameManifest",
+    "releases.prune",
     "site.enroll",
     "site.unenroll",
     "site.allocateIdentity",

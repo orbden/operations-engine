@@ -228,6 +228,22 @@ pub enum SiteCommand {
         idempotency_key: Option<String>,
     },
 
+    /// Preview, then delete, old release directories of an engine-deployed
+    /// site. Without `--confirm` it only lists what a delete would remove;
+    /// each `--confirm` is the exact name of one old release directory.
+    /// Never removes the active release, the newest `keepReleases`, a
+    /// rollback target or anything that is not a release directory.
+    PruneReleases {
+        #[arg(long = "site-id")]
+        site_id: String,
+        #[arg(long = "confirm")]
+        confirm: Vec<String>,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+
     /// Point a site's engine manifest at its new domain after a panel
     /// rename. Only `domain` changes; a repeat for the same domain is a
     /// no-op and the result names the previous domain for a rollback.
@@ -432,6 +448,7 @@ impl SiteCommand {
             Self::QuarantineFile { .. } => "site.quarantineFile",
             Self::PhpInfoSession { .. } => "site.phpInfoSession",
             Self::ReleaseRoot { .. } => "site.releaseRoot",
+            Self::PruneReleases { .. } => "releases.prune",
             Self::RenameManifest { .. } => "site.renameManifest",
             Self::Enroll { .. } => "site.enroll",
             Self::Unenroll { .. } => "site.unenroll",

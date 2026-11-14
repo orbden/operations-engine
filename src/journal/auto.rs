@@ -9,7 +9,7 @@
 //! `operationId`; a replayed request finds its entry already there.
 //!
 //! Wired: `site.deploy`, `site.rollback`, `site.renameManifest`,
-//! `site.unenroll`, `engine.install`, `engine.rollback`. Every other
+//! `site.unenroll`, `releases.prune` (delete only), `engine.install`, `engine.rollback`. Every other
 //! mutating operation is listed in `docs/protocol.md` ("Change journal") as
 //! a follow-up: they take a request file or a domain instead of a site id,
 //! and need their own cheap, secret-free way to name the site.
@@ -50,6 +50,15 @@ pub fn plan(command: &Command) -> Option<Plan> {
                 idempotency_key,
                 ..
             } => ("site.rollback", Some(site_id), request_id, idempotency_key),
+            // A preview changes nothing and is not journaled.
+            SiteCommand::PruneReleases {
+                site_id,
+                confirm,
+                request_id,
+                idempotency_key,
+            } if !confirm.is_empty() => {
+                ("releases.prune", Some(site_id), request_id, idempotency_key)
+            }
             SiteCommand::RenameManifest {
                 site_id,
                 request_id,

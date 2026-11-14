@@ -49,6 +49,10 @@ The proposed manifest contains only execution policy and non-secret identity:
 values supplied by a mutation request must match registered policy; they do not
 replace it.
 
+An optional `keepReleases` (integer 1 to 100, default 5) says how many of the
+newest releases the site keeps; deploy, rollback and `releases.prune` all read
+it, and any other value makes the manifest invalid.
+
 Manifest creation/update is a separate privileged operation with its own
 validation and atomic-write contract. Deploy and rollback never rewrite the
 manifest.
