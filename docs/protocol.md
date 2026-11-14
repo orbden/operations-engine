@@ -1024,8 +1024,8 @@ The result lists, per package, the installed version before and after (`dpkg-que
 Per service the result carries `kind` (`frankenphp`, `mariadb`, `valkey`, `postgres`, `meilisearch`, or `null` for an image outside the catalog prefix), `runningVersion`, the registry digests and `status` with a `reason`:
 
 - `upToDate`: the container's image already has the candidate digest.
-- `patchPending`: same major.minor and a higher patch (`newerPatch`), or the same version in a new image (`sameVersionNewImage`).
-- `minorOrMajor`: the candidate is another, higher major.minor line (`differentLine`). Never offered as a patch.
+- `patchPending`: same release line (major.minor; for PostgreSQL the major alone, as its `18.2` is a patch of `18`) and a higher patch (`newerPatch`), or the same version in a new image (`sameVersionNewImage`).
+- `minorOrMajor`: the candidate is another, higher release line (`differentLine`). Never offered as a patch.
 - `unknown`: no candidate, no candidate digest or version, the running version could not be read, a candidate older than what runs, or an image Docker cannot inspect. Never reported as up to date.
 - `manual`: not an image of the engine's catalog.
 
