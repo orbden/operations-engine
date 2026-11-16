@@ -165,6 +165,7 @@ fn capabilities_describe_only_implemented_operations() {
             "security.baselineCapture",
             "security.baselineCompare",
             "security.baselinePrune",
+            "security.dockerImageReplace",
             "security.history",
             "security.refresh",
             "security.setPolicy",

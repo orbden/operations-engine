@@ -102,6 +102,11 @@ pub fn run(command: SecurityCommand) -> Result<Response, ResponseBuildError> {
             &request_id,
             idempotency_key.as_deref(),
         ),
+        SecurityCommand::DockerImageReplace {
+            request_file,
+            request_id,
+            idempotency_key,
+        } => docker_image_replace(&request_file, &request_id, idempotency_key.as_deref()),
         SecurityCommand::History { limit } => with_state(security_feed::HISTORY, |state| {
             Response::success(
                 security_feed::HISTORY,
@@ -112,6 +117,116 @@ pub fn run(command: SecurityCommand) -> Result<Response, ResponseBuildError> {
             )
         }),
     }
+}
+
+#[cfg(unix)]
+fn docker_image_replace(
+    path: &std::path::Path,
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::{
+        config::EngineConfig,
+        error::WarningCode,
+        filesystem::ManagedRoot,
+        process::CancellationToken,
+        protocol::Warning,
+        stack_deploy::{
+            Context, Timing,
+            patch::{self, PatchError},
+        },
+    };
+    const OPERATION: &str = patch::SECURITY_OPERATION;
+    let Ok(config) =
+        EngineConfig::load_root_owned(std::path::Path::new("/etc/operations-engine/config.json"))
+    else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+        ));
+    };
+    let Ok(json) = crate::commands::read_root_owned_content_file(path) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::InvalidInput,
+            "request-file must be a root-owned regular file",
+        ));
+    };
+    if !cfg!(target_os = "linux") {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "security.dockerImageReplace requires a Linux host",
+        ));
+    }
+    let Ok(engine_state) = ManagedRoot::open(&config.state_root) else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "engine state root is unavailable",
+        ));
+    };
+    // The rules come from the engine's own accepted catalog, never the caller.
+    let status = security_feed::status(&engine_state, security_feed::now_unix());
+    let rules = status
+        .accepted
+        .as_ref()
+        .map(|a| a.image_rules.clone())
+        .unwrap_or_default();
+    let fresh = status.freshness == security_feed::Freshness::Fresh;
+    let request =
+        match patch::Request::parse_security(&json, request_id, idempotency_key, &rules, fresh) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(Response::failure(
+                    OPERATION,
+                    ErrorCode::InvalidInput,
+                    error.message(),
+                ));
+            }
+        };
+    let Some((stack_root, owner)) = crate::commands::stack::prepare_stack_root() else {
+        return Ok(Response::failure(
+            OPERATION,
+            ErrorCode::Internal,
+            "stack directory is unavailable",
+        ));
+    };
+    let context = Context {
+        engine_state: &engine_state,
+        stack_root: &stack_root,
+        docker: "docker",
+        timing: Timing::PRODUCTION,
+        owner,
+    };
+    match patch::execute(&context, &request, &CancellationToken::default()) {
+        Ok(result) => Response::success(OPERATION, result),
+        Err(PatchError::PostCommit { result }) => Response::success(OPERATION, result).map(|r| {
+            r.with_warnings(vec![Warning {
+                code: WarningCode::TransactionRecordIncomplete,
+                message: "the service was updated but its transaction record could not be saved"
+                    .to_owned(),
+            }])
+        }),
+        Err(error) => {
+            let (code, message) = error.protocol();
+            Ok(Response::failure(OPERATION, code, &message))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn docker_image_replace(
+    _path: &std::path::Path,
+    _request_id: &str,
+    _idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    Ok(Response::failure(
+        security_feed::SET_POLICY,
+        ErrorCode::UnsupportedPlatform,
+        "security.dockerImageReplace requires a Linux host",
+    ))
 }
 
 fn with_state(

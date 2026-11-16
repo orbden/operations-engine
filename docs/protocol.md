@@ -1140,10 +1140,37 @@ worst of its rules; with no published rule for the component it is `noRule`, nev
 Docker cannot list the stack, `inventory` is `unavailable` and there are no rows. Nothing is
 applied, no request leaves the machine.
 
+Each match also carries the rule's replacement (`toImage` as `repository@sha256:<hex>`,
+`toDigest`) and `platforms`, so a client can show what would be applied; capabilities report
+`features.securityImageReplace`.
+
 `set-policy` also syncs the schedule: `check-only` writes the fixed systemd units
 `wcp-security-refresh.service` and `.timer` (about hourly, `RandomizedDelaySec=10min`,
 `Persistent=true`) and enables the timer; `off` disables and removes them. The result's
 `timer` is `installed`, `removed` or `unavailable` (systemd is not the running init).
+
+## `security.dockerImageReplace`
+
+`security docker-image-replace --request-file <file> --request-id <id> [--idempotency-key <k>]`
+applies one accepted `docker.image.replace` fix of the security catalog to one managed PHP runtime,
+by hand. The root-owned request file is `{"fixId","service","sites":[...],"confirm":"RESTART <service>"}`;
+unknown keys are refused, so the image can never come from the caller: it is the replacement of
+the rule the engine accepted at its last refresh. `service` must be a `runtime-<n>` service, and
+`confirm` exactly `RESTART <service>` (`sites` is the list the caller told the user would be
+interrupted; it is recorded).
+
+It refuses, without changing anything, unless the accepted catalog is fresh, the fix exists for
+the `php-runtime` component, the replacement is a digest-pinned `ghcr.io/orbden/...` image
+(another registry, a tag, or a rule accepted before the replacement was kept is refused), the
+running container's real local image (its registry digests and platform, not its tag) is one the
+rule lists, and the compose file's image for the service is a `${VAR:-default}` that `.env` does
+not set. A runtime already on the replacement is a no-op (`changed: false`), so repeating the
+request makes no further attempt. It then follows the `runtime.patchUpdate` sequence under the
+same stack lock (stage, validate, pull, back up, replace only that service, wait for health) and
+additionally checks that the running image's digest is the replacement's. Any failure restores
+the previous compose file and image and reports it as such; a restored runtime is still affected,
+so the advisory stays unresolved and `security.affected` says so. The result and the transaction
+hold image references and the fix id only.
 
 ## `security.baselineCapture`, `security.baselineCompare`, `security.baselineAccept`, `security.baselinePrune`
 

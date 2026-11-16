@@ -66,6 +66,10 @@ pub struct RuleMatch {
     pub fix_id: String,
     pub advisory_id: String,
     pub verdict: Verdict,
+    /// The rule's replacement (`repository@sha256:<hex>`) and its digest.
+    pub to_image: String,
+    pub to_digest: String,
+    pub platforms: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -134,6 +138,9 @@ pub fn evaluate(
             .map(|rule| RuleMatch {
                 fix_id: rule.fix_id.clone(),
                 advisory_id: rule.advisory_id.clone(),
+                to_image: rule.to_image.clone(),
+                to_digest: rule.to_digest.clone(),
+                platforms: rule.platforms.clone(),
                 verdict: facts
                     .as_ref()
                     .map_or(Verdict::Unknown, |facts| judge(rule, facts)),
@@ -199,7 +206,7 @@ pub(crate) fn image_id_ok(id: &str) -> bool {
 }
 
 /// `runtime-<digits>`: the compose service of a managed PHP runtime.
-fn runtime_service(service: &str) -> bool {
+pub(crate) fn runtime_service(service: &str) -> bool {
     service.strip_prefix("runtime-").is_some_and(|rest| {
         !rest.is_empty() && rest.len() <= 12 && rest.bytes().all(|b| b.is_ascii_digit())
     })

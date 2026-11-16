@@ -307,6 +307,16 @@ pub enum SecurityCommand {
     Status,
     /// Report which managed PHP runtimes run an image the accepted feed names (local, read-only).
     Affected,
+    /// Replace the image of one managed PHP runtime with an accepted catalog fix's
+    /// digest (manual, confirmed, rolled back on failure).
+    DockerImageReplace {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
     /// List the most recent checks (read-only, newest first).
     History {
         #[arg(long)]
@@ -356,6 +366,7 @@ impl SecurityCommand {
             Self::Status => "security.status",
             Self::History { .. } => "security.history",
             Self::Affected => "security.affected",
+            Self::DockerImageReplace { .. } => "security.dockerImageReplace",
             Self::BaselineCapture { .. } => "security.baselineCapture",
             Self::BaselineCompare { .. } => "security.baselineCompare",
             Self::BaselineAccept { .. } => "security.baselineAccept",
