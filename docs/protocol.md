@@ -957,7 +957,8 @@ toggles maintenance, so clients must keep their own warning.
 `joomla update-core` and `joomla restore-update` accept a root-owned JSON
 request with `container`, `projectRoot`, `uid` and `gid` (and, for restore,
 `recoveryId`), one lock/idempotency/transaction/audit-backed request on a
-single-site Joomla 4 or later project. Nothing else is accepted; there is no
+single-site Joomla 5 or later project (a Joomla 4 or older site is refused as
+invalid input before anything runs: its console has no `core:update:check`). Nothing else is accepted; there is no
 command argument.
 
 Preflight changes nothing: the project must have `cli/joomla.php` and a

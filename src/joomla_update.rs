@@ -202,6 +202,8 @@ pub enum Error {
     NotJoomla,
     UnsupportedDatabase,
     VersionUnreadable,
+    /// Joomla 4 and older have no `core:update:check`.
+    UnsupportedVersion,
     /// `core:update:check` says the site is current.
     NothingToUpdate,
     /// The offered version has another major number.
@@ -252,6 +254,9 @@ impl Error {
             ),
             Self::VersionUnreadable => {
                 invalid("the installed Joomla version could not be read; nothing was changed")
+            }
+            Self::UnsupportedVersion => {
+                invalid("Joomla 4 sites are not supported by this update; nothing was changed")
             }
             Self::NothingToUpdate => invalid("Joomla is already up to date; nothing was changed"),
             Self::MajorUpdate => invalid(
@@ -436,6 +441,14 @@ fn console(
     )?)
 }
 
+/// Joomla 4 and older have no `core:update:check`: refuse them before running it.
+fn require_supported(installed: &str) -> Result<(), Error> {
+    match major(installed) {
+        Some(m) if m < 5 => Err(Error::UnsupportedVersion),
+        _ => Ok(()),
+    }
+}
+
 /// What `core:update:check` offers.
 #[derive(Debug, PartialEq, Eq)]
 enum Offer {
@@ -462,6 +475,7 @@ fn target_version(
     installed: &str,
     cancel: &CancellationToken,
 ) -> Result<String, Error> {
+    require_supported(installed)?;
     let output = console(ctx, &req.base, &["core:update:check"], RUN_TIMEOUT, cancel)?;
     if !exited_ok(&output) {
         return Err(Error::UpdateCheckFailed);
@@ -1257,6 +1271,22 @@ mod tests {
         }
         assert_eq!(major("5.4.10"), Some(5));
         assert_eq!(major("x"), None);
+    }
+
+    #[test]
+    fn joomla_4_is_refused_before_the_update_check() {
+        for old in ["4.4.14", "3.10.12"] {
+            assert!(matches!(
+                require_supported(old),
+                Err(Error::UnsupportedVersion)
+            ));
+        }
+        for ok in ["5.2.3", "5.4.10", "6.0.0"] {
+            assert!(require_supported(ok).is_ok(), "{ok}");
+        }
+        let (code, message) = Error::UnsupportedVersion.protocol();
+        assert!(matches!(code, ErrorCode::InvalidInput));
+        assert!(message.contains("Joomla 4 sites are not supported"));
     }
 
     #[test]
