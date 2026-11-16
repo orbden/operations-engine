@@ -121,7 +121,7 @@ struct Plan {
     interval: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Request {
     pub action: Action,
     container: ContainerName,
@@ -129,6 +129,9 @@ pub struct Request {
     document_root: PathBuf,
     uid: u32,
     gid: u32,
+    /// Host passed to Drush as `--uri` for one site of a multisite project.
+    /// Set only by a caller that validated it against `sites.php`.
+    site_host: Option<String>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -204,6 +207,7 @@ impl Request {
             document_root,
             uid: plan.uid,
             gid: plan.gid,
+            site_host: None,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError::InvalidRequestId)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -214,6 +218,18 @@ impl Request {
 
     pub fn root(&self) -> &std::path::Path {
         &self.project_root
+    }
+
+    /// The same request aimed at one site of a multisite project.
+    pub(crate) fn for_site(&self, host: Option<String>) -> Self {
+        Self {
+            site_host: host,
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn site_host(&self) -> Option<&str> {
+        self.site_host.as_deref()
     }
 
     pub(crate) fn document_root_str(&self) -> String {
@@ -463,6 +479,9 @@ pub(crate) fn drush(
         format!("--root={}", req.document_root.display()),
         "--no-interaction".into(),
     ];
+    if let Some(host) = &req.site_host {
+        args.push(format!("--uri={host}"));
+    }
     args.extend(drush_args.iter().map(|arg| (*arg).to_owned()));
     let output = process::run(
         &ProcessRequest::new(ctx.docker_program).args(args),
@@ -955,7 +974,7 @@ pub(crate) fn backup_database(
                 db.database.clone(),
             ]),
         None => {
-            let args: Vec<String> = vec![
+            let mut args: Vec<String> = vec![
                 "exec".into(),
                 "-i".into(),
                 "--user".into(),
@@ -970,8 +989,11 @@ pub(crate) fn backup_database(
                 "drush".into(),
                 format!("--root={}", req.document_root.display()),
                 "--no-interaction".into(),
-                "sql:dump".into(),
             ];
+            if let Some(host) = &req.site_host {
+                args.push(format!("--uri={host}"));
+            }
+            args.push("sql:dump".into());
             ProcessRequest::new(ctx.docker_program).args(args)
         }
     };

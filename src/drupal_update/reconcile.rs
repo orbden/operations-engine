@@ -40,8 +40,9 @@ pub(super) fn reconcile(
     current: RequestId,
     leave: Option<RequestId>,
 ) -> Result<(), Error> {
-    for id in incomplete(ctx, base, scope, current, leave) {
-        rollback(ctx, base, id).map_err(|error| {
+    for (id, host) in incomplete(ctx, base, scope, current, leave) {
+        // A bundle is rolled back as the site it was written for.
+        rollback(ctx, &base.for_site(host), id).map_err(|error| {
             Error::RecoveryRequired(format!(
                 "an earlier update was interrupted and rolling it back failed ({}); its recovery \
                  bundle {id} is kept",
@@ -60,7 +61,7 @@ fn incomplete(
     scope: &ManagedRoot,
     current: RequestId,
     leave: Option<RequestId>,
-) -> Vec<RequestId> {
+) -> Vec<(RequestId, Option<String>)> {
     let Ok(entries) = std::fs::read_dir(ctx.backup_path.join("drupal-updates")) else {
         return Vec::new();
     };
@@ -97,11 +98,15 @@ fn incomplete(
             None => transaction_in_progress(scope, id),
         };
         if needs_rollback {
-            found.push((manifest.created_at_unix_secs, id));
+            found.push((
+                manifest.created_at_unix_secs,
+                id,
+                manifest.site.map(|site| site.host),
+            ));
         }
     }
-    found.sort_by_key(|(created, _)| *created);
-    found.into_iter().map(|(_, id)| id).collect()
+    found.sort_by_key(|(created, _, _)| *created);
+    found.into_iter().map(|(_, id, host)| (id, host)).collect()
 }
 
 fn transaction_path(id: RequestId) -> SiteRelativePath {

@@ -15,8 +15,19 @@
 //!
 //! Nothing here takes a command: the caller supplies validated paths, UID/GID
 //! and, for packages, `vendor/name` identifiers that must already be locked
-//! in the project. Multisite projects and non-MySQL databases are refused
-//! before anything is changed.
+//! in the project. Non-MySQL databases are refused before anything is changed.
+//!
+//! A multisite project is refused unless the request names one site with
+//! `site` (`{host, directory}`). The host must be mapped to that directory by
+//! a static `sites.php` and Drush, run with `--uri=<host>`, must select that
+//! same `sites/<directory>` with a connected database; the site's database
+//! must not be shared through a table prefix (the rollback empties the whole
+//! database). Composer and core code are shared by every site, so the update
+//! changes all of them: the result says so (`site.affectsAllSites`). The
+//! recovery bundle holds the whole project's files and the named site's
+//! database only (`site.recoveryScope`); other sites' databases are not saved
+//! and not restored. A bundle remembers its site, and `restoreUpdate` must
+//! name the same one.
 
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
@@ -24,7 +35,8 @@ use crate::{
         self, COMPOSER_HOME, CONTAINER_COMPOSER, INSTALL_TIMEOUT, MAX_OUTPUT, READ_TIMEOUT,
         RUN_TIMEOUT, UPDATE_TIMEOUT, container_exec, drush, exited_ok,
     },
-    drupal_site,
+    drupal_site::{self, DrupalSiteIdentity},
+    drupal_watchdog::{self, SiteError},
     error::ErrorCode,
     filesystem::ManagedRoot,
     mutation::preflight,
@@ -82,12 +94,30 @@ struct Plan {
     packages: Option<Vec<String>>,
     /// `restoreUpdate` only: the request id of the update to undo.
     recovery_id: Option<String>,
+    /// The one site of a multisite project this request is about.
+    site: Option<SitePlan>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SitePlan {
+    host: String,
+    directory: String,
+}
+
+/// The requested site: both parts are validated (`drupal_site::check_*`) at
+/// parse time and checked against `sites.php` and Drush before any change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SiteSelector {
+    host: String,
+    directory: String,
 }
 
 pub struct Request {
     kind: Kind,
     packages: Vec<String>,
     recovery_id: Option<RequestId>,
+    site: Option<SiteSelector>,
     /// The shared Drush/Composer request shape of `drupal_action`.
     base: drupal_action::Request,
     pub request_id: RequestId,
@@ -100,6 +130,7 @@ pub enum RequestError {
     InvalidPackage,
     InvalidRecoveryId,
     InvalidShape,
+    InvalidSite,
     Base(drupal_action::RequestError),
 }
 
@@ -161,8 +192,21 @@ impl Request {
             "gid": plan.gid,
         })
         .to_string();
+        let site = match plan.site {
+            None => None,
+            Some(site) => {
+                drupal_site::check_host(&site.host).map_err(|_| RequestError::InvalidSite)?;
+                drupal_site::check_directory(&site.directory)
+                    .map_err(|_| RequestError::InvalidSite)?;
+                Some(SiteSelector {
+                    host: site.host,
+                    directory: site.directory,
+                })
+            }
+        };
         let base = drupal_action::Request::parse("cache-rebuild", &base_json, request_id, key)
-            .map_err(RequestError::Base)?;
+            .map_err(RequestError::Base)?
+            .for_site(site.as_ref().map(|site| site.host.clone()));
         let _: ContainerName =
             ContainerName::parse(&plan.container).map_err(|_: RestoreRequestError| {
                 RequestError::Base(drupal_action::RequestError::InvalidContainer)
@@ -171,6 +215,7 @@ impl Request {
             kind,
             packages,
             recovery_id,
+            site,
             base,
             request_id: RequestId::parse(request_id)
                 .map_err(|_| RequestError::Base(drupal_action::RequestError::InvalidRequestId))?,
@@ -207,7 +252,35 @@ pub struct UpdateResult {
     pub versions_before: BTreeMap<String, String>,
     #[serde(default)]
     pub versions_after: BTreeMap<String, String>,
+    /// The site of a multisite project this request was about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<UpdateSite>,
     pub completed_at_unix_secs: u64,
+}
+
+/// What a multisite update did and did not cover. No credential.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSite {
+    pub host: String,
+    pub directory: String,
+    pub database: String,
+    /// Always `true`: Composer and core code are shared by every site.
+    pub affects_all_sites: bool,
+    /// What the recovery bundle covers.
+    pub recovery_scope: String,
+}
+
+const RECOVERY_SCOPE: &str = "all files of the project (shared code, every site's files) and the database of this site only; other sites' databases are not saved or restored";
+
+fn update_site(site: &drupal_watchdog::VerifiedSite) -> UpdateSite {
+    UpdateSite {
+        host: site.host.clone(),
+        directory: site.directory.clone(),
+        database: site.database.clone(),
+        affects_all_sites: true,
+        recovery_scope: RECOVERY_SCOPE.into(),
+    }
 }
 
 pub struct Context<'a> {
@@ -241,6 +314,13 @@ pub enum Error {
     Action(drupal_action::Error),
     Run(process::ProcessRunError),
     Multisite,
+    /// The named site could not be confirmed (see [`SiteError`]).
+    Site(SiteError),
+    /// The site's tables share a database through a prefix (or the prefix is
+    /// unknown), so a database-wide dump and restore would reach other sites.
+    SiteDatabaseShared,
+    /// A bundle belongs to another site than the request names.
+    BundleSiteMismatch,
     NotAComposerProject,
     ComposerMissing,
     UnsupportedDatabase,
@@ -283,8 +363,27 @@ impl Error {
             ),
             Self::Multisite => (
                 ErrorCode::InvalidInput,
-                "this Drupal project is a multisite; recovery-first updates support single-site \
-                 projects only, nothing was changed"
+                "this Drupal project is a multisite; name one site (host and directory) to update \
+                 it; nothing was changed"
+                    .into(),
+            ),
+            Self::Site(error) => (
+                ErrorCode::InvalidInput,
+                format!(
+                    "{}; nothing was changed",
+                    error.message().trim_end_matches("; nothing was read")
+                ),
+            ),
+            Self::SiteDatabaseShared => (
+                ErrorCode::InvalidInput,
+                "the site's tables use a prefix (or none is reported), so its database may hold \
+                 other sites and a backup of this site alone cannot be taken; nothing was changed"
+                    .into(),
+            ),
+            Self::BundleSiteMismatch => (
+                ErrorCode::InvalidInput,
+                "the recovery bundle belongs to another site (or to none); name that site to \
+                 restore it; nothing was changed"
                     .into(),
             ),
             Self::NotAComposerProject => (
@@ -370,6 +469,9 @@ struct Manifest {
     versions_before: BTreeMap<String, String>,
     files_sha256: String,
     database_sha256: String,
+    /// The site whose database `database.sql` holds (multisite only).
+    #[serde(default)]
+    site: Option<UpdateSite>,
 }
 
 fn now() -> u64 {
@@ -456,6 +558,46 @@ fn is_multisite(
     Ok(!exited_ok(&output))
 }
 
+/// Confirms the named site against `sites.php` and Drush (`--uri=<host>`
+/// selects it) before anything is changed, and that its database is its own.
+fn verify_site(
+    ctx: &Context<'_>,
+    req: &Request,
+    selector: &SiteSelector,
+    cancel: &CancellationToken,
+) -> Result<drupal_watchdog::VerifiedSite, Error> {
+    let docroot = req.base.document_root_str();
+    let map = drupal_site::read_sites_map(Path::new(&docroot))
+        .map_err(|e| Error::Site(SiteError::from(e)))?;
+    let identity = DrupalSiteIdentity::resolve(Path::new(&docroot), &map, &selector.host)
+        .map_err(|e| Error::Site(SiteError::from(e)))?;
+    if identity.directory() != selector.directory {
+        return Err(Error::Site(SiteError::DirectoryMismatch));
+    }
+    let action = ctx.action();
+    let status = drupal_action::drush(
+        &action,
+        &req.base,
+        &["status", "--fields=site,db-name,db-status", "--format=json"],
+        READ_TIMEOUT,
+        cancel,
+    )?;
+    let conf = drupal_action::drush(
+        &action,
+        &req.base,
+        &["sql:conf", "--format=json"],
+        READ_TIMEOUT,
+        cancel,
+    )?;
+    let verified = drupal_watchdog::verify_drush(&identity, &status, &conf).map_err(Error::Site)?;
+    // The rollback empties the whole database: only a database without a
+    // table prefix belongs to this site alone.
+    if verified.table_prefix.as_deref() != Some("") {
+        return Err(Error::SiteDatabaseShared);
+    }
+    Ok(verified)
+}
+
 fn tar_bundle(
     ctx: &Context<'_>,
     req: &Request,
@@ -495,6 +637,7 @@ fn bundle(
     req: &Request,
     previous_maintenance: bool,
     versions_before: &BTreeMap<String, String>,
+    site: Option<&UpdateSite>,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     let dir = format!("drupal-updates/{}", req.request_id);
@@ -518,6 +661,7 @@ fn bundle(
         versions_before: versions_before.clone(),
         files_sha256,
         database_sha256,
+        site: site.cloned(),
     };
     ctx.backup_root
         .create_new(
@@ -716,6 +860,10 @@ fn rollback(
     if manifest.project_root != base.root().display().to_string() {
         return Err(Error::BundleCorrupt);
     }
+    // A bundle holds one site's database: only that site may restore it.
+    if manifest.site.as_ref().map(|site| site.host.as_str()) != base.site_host() {
+        return Err(Error::BundleSiteMismatch);
+    }
     let bundle_dir = ctx.backup_path.join(&dir);
     let files = bundle_dir.join("files.tar.gz");
     let database = bundle_dir.join("database.sql");
@@ -830,6 +978,7 @@ fn run(
             reason: None,
             versions_before: manifest.versions_before.clone(),
             versions_after: manifest.versions_before,
+            site: manifest.site,
             completed_at_unix_secs: now(),
         });
     }
@@ -854,9 +1003,11 @@ fn run(
             req.packages.clone()
         }
     };
-    if is_multisite(ctx, req, cancel)? {
-        return Err(Error::Multisite);
-    }
+    let site = match &req.site {
+        Some(selector) => Some(update_site(&verify_site(ctx, req, selector, cancel)?)),
+        None if is_multisite(ctx, req, cancel)? => return Err(Error::Multisite),
+        None => None,
+    };
     if drupal_action::read_db_connection(&action, &req.base, cancel)?.is_none() {
         return Err(Error::UnsupportedDatabase);
     }
@@ -868,7 +1019,7 @@ fn run(
         .collect();
 
     prune_bundles(ctx, req.request_id);
-    bundle(ctx, req, previous, &watched, cancel)?;
+    bundle(ctx, req, previous, &watched, site.as_ref(), cancel)?;
 
     // From here a failure is rolled back by the engine.
     let unlocked = unlock_default_site(req);
@@ -904,6 +1055,7 @@ fn run(
                 reason: None,
                 versions_before: watched,
                 versions_after: after,
+                site,
                 completed_at_unix_secs: now(),
             })
         }
@@ -920,6 +1072,7 @@ fn run(
                 reason: Some(reason),
                 versions_before: watched.clone(),
                 versions_after: watched,
+                site,
                 completed_at_unix_secs: now(),
             })
         }

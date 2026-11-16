@@ -207,6 +207,7 @@ fn restoring_without_a_bundle_or_with_a_tampered_one_changes_nothing() {
         versions_before: BTreeMap::new(),
         files_sha256: "0".repeat(64),
         database_sha256: "0".repeat(64),
+        site: None,
     };
     fs::write(
         bundle.join("manifest.json"),
@@ -358,6 +359,7 @@ fn bundle_of_now(fx: &Fixture, id: &str, steps: &[Step], transaction: bool) {
         versions_before: BTreeMap::new(),
         files_sha256: sha256_file(&bundle.join("files.tar.gz")).unwrap().1,
         database_sha256: sha256_file(&bundle.join("database.sql")).unwrap().1,
+        site: None,
     };
     fs::write(
         bundle.join("manifest.json"),
@@ -517,4 +519,155 @@ fn a_bundle_of_another_project_is_not_touched() {
     run_request(&fx, "update-packages", NOT_LOCKED).unwrap_err();
     assert!(fx.root.join("later-change").exists());
     assert_eq!(last_step(&fx, OLDER_ID), "ComposerDone");
+}
+
+const SITE: &str = r#","site":{"host":"shop.test","directory":"shop"}"#;
+
+#[test]
+fn parse_validates_the_site_and_never_takes_free_text() {
+    let ok = Request::parse("update-core", &plan("/var/www/s", SITE), ID, None).unwrap();
+    assert_eq!(ok.base.site_host(), Some("shop.test"));
+    for bad in [
+        r#","site":{"host":"","directory":"shop"}"#,
+        r#","site":{"host":"a b","directory":"shop"}"#,
+        r#","site":{"host":"--root=/x","directory":"shop"}"#,
+        r#","site":{"host":"a.com","directory":"../x"}"#,
+        r#","site":{"host":"a.com","directory":"all"}"#,
+        r#","site":{"host":"a.com"}"#,
+        r#","site":{"host":"a.com","directory":"shop","uri":"x"}"#,
+    ] {
+        assert!(
+            Request::parse("update-core", &plan("/var/www/s", bad), ID, None).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(
+        Request::parse("update-core", &plan("/var/www/s", ""), ID, None)
+            .unwrap()
+            .base
+            .site_host()
+            .is_none()
+    );
+}
+
+/// A multisite project whose `sites.php` maps shop.test to `sites/shop`, with a
+/// fake Drush that selects `sites/shop` using the given table prefix.
+fn site_fixture(prefix: &str) -> Fixture {
+    let fx = fixture(LOCK, JSON, true);
+    fs::create_dir_all(fx.root.join("web/sites/shop")).unwrap();
+    fs::write(
+        fx.root.join("web/sites/sites.php"),
+        "<?php\n$sites['shop.test'] = 'shop';\n",
+    )
+    .unwrap();
+    let docker = fx.dir.path().join("fake-docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n\
+             *sql:conf*) echo '{{\"driver\":\"mysql\",\"host\":\"db1\",\"username\":\"u\",\"password\":\"p\",\"database\":\"d\",\"prefix\":\"{prefix}\"}}' ;;\n\
+             *status*) echo '{{\"site\":\"sites/shop\",\"db-name\":\"d\",\"db-status\":\"Connected\",\"bootstrap\":\"Successful\"}}' ;;\nesac\nexit 0\n",
+            log = fx.dir.path().join("docker.log").display(),
+        ),
+    )
+    .unwrap();
+    fx
+}
+
+#[test]
+fn a_site_with_a_table_prefix_is_refused_before_anything_changes() {
+    let fx = site_fixture("shop_");
+    let error = run_request(&fx, "update-core", SITE).unwrap_err();
+    assert!(matches!(error, Error::SiteDatabaseShared), "{error:?}");
+    let log = docker_log(&fx);
+    assert!(log.contains("--uri=shop.test"), "{log}");
+    assert!(!log.contains("composer.phar"), "{log}");
+    assert!(!fx.dir.path().join("backups/drupal-updates").exists());
+}
+
+#[test]
+fn a_host_that_sites_php_does_not_map_to_that_directory_is_refused() {
+    let fx = site_fixture("");
+    let wrong = r#","site":{"host":"shop.test","directory":"default"}"#;
+    let error = run_request(&fx, "update-core", wrong).unwrap_err();
+    assert!(
+        matches!(error, Error::Site(SiteError::DirectoryMismatch)),
+        "{error:?}"
+    );
+    let unmapped = r#","site":{"host":"other.test","directory":"shop"}"#;
+    let error = run_request_as(
+        &fx,
+        "update-core",
+        unmapped,
+        "123e4567-e89b-12d3-a456-426614174005",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::Site(SiteError::NotMapped)),
+        "{error:?}"
+    );
+    assert!(!docker_log(&fx).contains("composer.phar"));
+}
+
+#[test]
+fn a_site_result_says_every_site_changes_and_what_the_bundle_holds() {
+    let site = update_site(&drupal_watchdog::VerifiedSite {
+        host: "shop.test".into(),
+        directory: "shop".into(),
+        database: "shop_db".into(),
+        table_prefix: Some(String::new()),
+    });
+    assert!(site.affects_all_sites);
+    assert!(site.recovery_scope.contains("database of this site only"));
+    let json = serde_json::to_string(&site).unwrap();
+    assert!(
+        json.contains("affectsAllSites") && json.contains("recoveryScope"),
+        "{json}"
+    );
+    assert!(!json.contains("password"), "{json}");
+}
+
+#[test]
+fn a_bundle_of_one_site_cannot_be_restored_as_another_or_as_none() {
+    let fx = site_fixture("");
+    let bundle = fx.dir.path().join("backups/drupal-updates").join(ID);
+    fs::create_dir_all(&bundle).unwrap();
+    let manifest = Manifest {
+        version: 1,
+        operation: CORE.into(),
+        request_id: ID.into(),
+        project_root: fx.root.display().to_string(),
+        document_root: format!("{}/web", fx.root.display()),
+        created_at_unix_secs: 0,
+        previous_maintenance_mode: false,
+        versions_before: BTreeMap::new(),
+        files_sha256: "0".repeat(64),
+        database_sha256: "0".repeat(64),
+        site: Some(UpdateSite {
+            host: "shop.test".into(),
+            directory: "shop".into(),
+            database: "d".into(),
+            affects_all_sites: true,
+            recovery_scope: RECOVERY_SCOPE.into(),
+        }),
+    };
+    fs::write(
+        bundle.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let other = "123e4567-e89b-12d3-a456-426614174002";
+    let none = format!(r#","recoveryId":"{ID}""#);
+    let error = run_request_as(&fx, "restore-update", &none, other).unwrap_err();
+    assert!(matches!(error, Error::BundleSiteMismatch), "{error:?}");
+    let wrong =
+        format!(r#","recoveryId":"{ID}","site":{{"host":"other.test","directory":"shop"}}"#);
+    let error = run_request_as(
+        &fx,
+        "restore-update",
+        &wrong,
+        "123e4567-e89b-12d3-a456-426614174003",
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::BundleSiteMismatch), "{error:?}");
 }

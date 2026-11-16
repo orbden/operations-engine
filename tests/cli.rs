@@ -244,6 +244,10 @@ fn capabilities_describe_only_implemented_operations() {
         serde_json::json!(true)
     );
     assert_eq!(
+        response["result"]["features"]["drupalUpdateSite"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
         response["result"]["features"]["agentHelpers"],
         serde_json::json!([
             "heartbeat",
