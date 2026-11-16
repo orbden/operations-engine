@@ -14,9 +14,10 @@ version negotiation (`MIN_PROTOCOL_VERSION`/`MAX_PROTOCOL_VERSION` in
 
 ## Minimum host platform
 
-`release.yml` builds `x86_64-unknown-linux-gnu` on the `ubuntu-latest`
-GitHub Actions runner and `aarch64-unknown-linux-gnu` natively on
-`ubuntu-24.04-arm` - both currently Ubuntu 24.04 LTS, glibc 2.39. This is a
+The release binaries were built for `x86_64-unknown-linux-gnu` on the
+`ubuntu-latest` GitHub Actions runner and for `aarch64-unknown-linux-gnu`
+natively on `ubuntu-24.04-arm` - both Ubuntu 24.04 LTS, glibc 2.39. Build
+them on a host with the same glibc or older. This is a
 floor implied by the build environment, not an independently chosen or
 tested minimum: `ARTIFACT_NOT_RUNNABLE` (see `docs/protocol.md`'s error
 taxonomy) is the most likely real-world trigger on an older distribution
