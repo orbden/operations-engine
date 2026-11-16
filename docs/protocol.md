@@ -1033,6 +1033,20 @@ carry no Composer or Drush output. `composer update` is blocked by Composer itse
 locked core is affected by security advisories; such a request fails and is rolled back with
 nothing changed.
 
+In a multisite project the request adds `site: {"host", "directory"}` (advertised
+as `features.drupalUpdateSite`); without it a multisite project is refused. The
+site is confirmed like `drupal.watchdog` does (static `sites.php`, `directory`
+is the one mapped to `host`, Drush run with `--uri=<host>` selects
+`sites/<directory>` with a connected database), and the site's tables must have
+no prefix, because the rollback empties the whole database; otherwise the
+request fails with `INVALID_INPUT` and a message ending `nothing was changed`.
+Composer and core are shared code, so every site changes: the result adds
+`site: {host, directory, database, affectsAllSites: true, recoveryScope}`. The
+bundle holds the whole project's files and the named site's database only;
+other sites' databases are neither saved nor restored. The manifest records the
+site, and `restoreUpdate` (and the automatic rollback of an interrupted update)
+uses that site's `--uri`; a restore that names another site, or none, is refused.
+
 ## `system.updatesStatus`
 
 Read-only. Reports the host's pending apt upgrades (a simulated `apt-get -s dist-upgrade` over the package lists already on disk, so nothing is installed and no lock is taken), whether `/var/run/reboot-required` exists, the time of the last successful `apt-get update` and the `End-Date` of the newest apt run that upgraded packages (server-local, as apt logged it). Each package carries its name, installed and candidate version and whether the candidate is in a `-security` pocket; at most 500 are listed and `truncated` says when more are pending.

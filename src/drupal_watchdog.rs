@@ -304,7 +304,7 @@ pub enum SiteError {
 }
 
 impl SiteError {
-    const fn message(self) -> &'static str {
+    pub(crate) const fn message(self) -> &'static str {
         match self {
             Self::MapUnsupported => {
                 "sites.php is not a plain list of $sites['host'] = 'directory'; assignments, so multisite requests are not supported for this project; nothing was read"

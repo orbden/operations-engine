@@ -38,6 +38,11 @@ struct Features {
     /// project and answers with the verified site. Without this field the
     /// engine rejects the key.
     drupal_watchdog_site: bool,
+    /// `drupal.updateCore`, `drupal.updatePackages` and `drupal.restoreUpdate`
+    /// accept `site` (`{host, directory}`) for one site of a multisite
+    /// project and report it in the result. Without this field the engine
+    /// rejects the key.
+    drupal_update_site: bool,
     /// `wordpress.rotateDebugLog` accepts `--compress` (gzip of the rotated
     /// copy). An engine without this field rejects the flag.
     debug_log_gzip: bool,
@@ -299,6 +304,7 @@ pub fn run() -> Result<Response, ResponseBuildError> {
                 clone_staging_defaults: true,
                 drupal_update_db_safety: true,
                 drupal_watchdog_site: true,
+                drupal_update_site: true,
                 debug_log_gzip: true,
                 content_recovery_evidence: true,
                 admin_paths: admin_paths_catalog(),
