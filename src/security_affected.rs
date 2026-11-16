@@ -205,10 +205,16 @@ pub(crate) fn image_id_ok(id: &str) -> bool {
     })
 }
 
-/// `runtime-<digits>`: the compose service of a managed PHP runtime.
+/// The compose service of a managed PHP runtime: `runtime-<digits>` or the default
+/// FrankenPHP pool `runtime-fp<digits>-php<digits>` (for example `runtime-fp1-php83`).
 pub(crate) fn runtime_service(service: &str) -> bool {
+    let digits = |s: &str| s.len() <= 12 && !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     service.strip_prefix("runtime-").is_some_and(|rest| {
-        !rest.is_empty() && rest.len() <= 12 && rest.bytes().all(|b| b.is_ascii_digit())
+        digits(rest)
+            || rest
+                .strip_prefix("fp")
+                .and_then(|r| r.split_once("-php"))
+                .is_some_and(|(pool, php)| digits(pool) && digits(php))
     })
 }
 

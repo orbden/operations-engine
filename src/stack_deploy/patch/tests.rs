@@ -3,9 +3,9 @@ use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
 const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 const ID_2: &str = "123e4567-e89b-12d3-a456-426614174001";
-const OLD: &str = "ghcr.io/local-control-panel/valkey:9@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const NEW: &str = "ghcr.io/local-control-panel/valkey:9@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const COMPOSE: &str = "services:\n  ingress:\n    image: ${WCP_INGRESS_IMAGE:-ghcr.io/local-control-panel/frankenphp:1@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}\n  valkey-9:\n    image: ${WCP_VALKEY_IMAGE:-ghcr.io/local-control-panel/valkey:9@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n    restart: unless-stopped\n";
+const OLD: &str = "ghcr.io/orbden/valkey:9@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const NEW: &str = "ghcr.io/orbden/valkey:9@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const COMPOSE: &str = "services:\n  ingress:\n    image: ${WCP_INGRESS_IMAGE:-ghcr.io/orbden/frankenphp:1@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}\n  valkey-9:\n    image: ${WCP_VALKEY_IMAGE:-ghcr.io/orbden/valkey:9@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n    restart: unless-stopped\n";
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -45,7 +45,7 @@ if [ "$1" = inspect ]; then
   exit 0
 fi
 if [ "$1" = image ]; then
-  printf '[{{"Os":"linux","Architecture":"amd64","RepoDigests":["ghcr.io/local-control-panel/valkey@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"Config":{{"Env":["PATH=/bin","VALKEY_VERSION={running_version}"]}}}}]'
+  printf '[{{"Os":"linux","Architecture":"amd64","RepoDigests":["ghcr.io/orbden/valkey@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"Config":{{"Env":["PATH=/bin","VALKEY_VERSION={running_version}"]}}}}]'
   exit 0
 fi
 shift 3
@@ -298,7 +298,7 @@ fn the_request_needs_the_exact_confirmation_and_a_valid_image() {
         Request::parse(&tag, ID, None).unwrap_err(),
         RequestError::InvalidImage
     );
-    let foreign = ok.replace("ghcr.io/local-control-panel/", "docker.io/");
+    let foreign = ok.replace("ghcr.io/orbden/", "docker.io/");
     assert_eq!(
         Request::parse(&foreign, ID, None).unwrap_err(),
         RequestError::InvalidImage

@@ -20,7 +20,7 @@ pub const OPERATION: &str = "runtime.patchStatus";
 const MAX_CANDIDATES: usize = 64;
 const MAX_SERVICES: usize = 256;
 const MANAGED_PROJECT_LABEL: &str = "label=com.docker.compose.project=wcp";
-const IMAGE_PREFIX: &str = "ghcr.io/local-control-panel/";
+const IMAGE_PREFIX: &str = "ghcr.io/orbden/";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RequestError {

@@ -8,7 +8,7 @@
 //! - the request carries the exact confirmation `RESTART <service>` and the
 //!   list of sites the caller says run on the service (recorded, so the audit
 //!   shows who was told what; the engine cannot enumerate the sites itself);
-//! - the image is a digest-pinned `ghcr.io/local-control-panel/...` reference
+//! - the image is a digest-pinned `ghcr.io/orbden/...` reference
 //!   of the same repository the service already runs;
 //! - `runtime.patchStatus` judges it `patchPending` from the running image's
 //!   version and the supplied `resolvedVersion` (same release line, higher
@@ -50,17 +50,9 @@ pub const OPERATION: &str = "runtime.patchUpdate";
 /// The catalog-driven variant: same sequence, but the image comes from an
 /// accepted `docker.image.replace` rule and the judgement is by digest.
 pub const SECURITY_OPERATION: &str = "security.dockerImageReplace";
-/// Registries a catalog replacement may come from.
-const CATALOG_PREFIXES: [&str; 2] = ["ghcr.io/orbden/", IMAGE_PREFIX];
-
-/// `ghcr.io/orbden/<name>[:tag]@sha256:<hex>` (or the engine's own prefix).
+/// `ghcr.io/orbden/<name>[:tag]@sha256:<hex>`.
 pub fn catalog_image(reference: &str) -> bool {
-    CATALOG_PREFIXES.iter().any(|prefix| {
-        reference.strip_prefix(prefix).is_some_and(|rest| {
-            // The stack's image policy checks the name, tag and digest.
-            image_allowed(&format!("{IMAGE_PREFIX}{rest}"))
-        })
-    })
+    image_allowed(reference)
 }
 const PATCH_JOURNAL: &str = "patch-journal.json";
 const MAX_SITES: usize = 500;
@@ -415,10 +407,7 @@ impl RewriteError {
 /// image of another organisation is still the same image.
 fn repository(reference: &str) -> &str {
     let name = reference.split(['@', ':']).next().unwrap_or(reference);
-    CATALOG_PREFIXES
-        .iter()
-        .find_map(|prefix| name.strip_prefix(prefix))
-        .unwrap_or(name)
+    name.strip_prefix(IMAGE_PREFIX).unwrap_or(name)
 }
 
 /// Replaces the default of the service's `image: ${VAR:-default}` line and

@@ -6,7 +6,7 @@
 //! The caller owns the file contents (the image catalog lives with the
 //! control panel), but the engine owns everything that runs as root: the
 //! fixed path set, the image policy (every image must be a digest-pinned
-//! `ghcr.io/local-control-panel/...` reference), validation and pull against
+//! `ghcr.io/orbden/...` reference), validation and pull against
 //! staged copies before anything live changes, activation with a durable
 //! journal, the health gate, and the automatic rollback when the new stack
 //! does not come up.
@@ -93,7 +93,7 @@ const DIRECTORIES: [&str; 5] = [
 ];
 
 pub const INGRESS_SERVICE: &str = "ingress";
-const IMAGE_PREFIX: &str = "ghcr.io/local-control-panel/";
+const IMAGE_PREFIX: &str = "ghcr.io/orbden/";
 pub const MAX_FILE_BYTES: usize = 128 * 1024;
 const JOURNAL: &str = "journal.json";
 
@@ -347,7 +347,7 @@ fn missing_env_values(env: &str, keys: &[String]) -> Vec<String> {
     missing
 }
 
-/// `ghcr.io/local-control-panel/<name>[:<tag>]@sha256:<64 lowercase hex>`.
+/// `ghcr.io/orbden/<name>[:<tag>]@sha256:<64 lowercase hex>`.
 pub fn image_allowed(reference: &str) -> bool {
     let Some(rest) = reference.strip_prefix(IMAGE_PREFIX) else {
         return false;
@@ -1392,7 +1392,7 @@ if [ "$1" = ps ]; then [ -e "$C/running" ] && echo cid1 cid2; exit 0; fi
 if [ "$1" = inspect ]; then
   ports='[{{"HostIp":"0.0.0.0","HostPort":"443"}}]'; [ -e "$C/no-ports" ] && ports='[]'
   health='"Health":{{"Status":"healthy"}},'; [ -e "$C/unhealthy" ] && health='"Health":{{"Status":"unhealthy"}},'
-  printf '[{{"Config":{{"Image":"ghcr.io/local-control-panel/frankenphp:1@sha256:%s","Labels":{{"com.docker.compose.service":"ingress"}}}},"Image":"sha256:aa","State":{{"Status":"running"}},"NetworkSettings":{{"Ports":{{"443/tcp":%s}}}}}},{{"Config":{{"Image":"ghcr.io/local-control-panel/mariadb:11@sha256:%s","Labels":{{"com.docker.compose.service":"mariadb-11"}}}},"Image":"sha256:bb","State":{{%s"Status":"running"}},"NetworkSettings":{{"Ports":{{}}}}}}]' "$D" "$ports" "$D" "$health"
+  printf '[{{"Config":{{"Image":"ghcr.io/orbden/frankenphp:1@sha256:%s","Labels":{{"com.docker.compose.service":"ingress"}}}},"Image":"sha256:aa","State":{{"Status":"running"}},"NetworkSettings":{{"Ports":{{"443/tcp":%s}}}}}},{{"Config":{{"Image":"ghcr.io/orbden/mariadb:11@sha256:%s","Labels":{{"com.docker.compose.service":"mariadb-11"}}}},"Image":"sha256:bb","State":{{%s"Status":"running"}},"NetworkSettings":{{"Ports":{{}}}}}}]' "$D" "$ports" "$D" "$health"
   exit 0
 fi
 shift 3
@@ -1401,7 +1401,7 @@ echo "$* [$env] $(head -n1 "$file" 2>/dev/null)" >> "$C/calls.log"
 case "$*" in
   "config --quiet") [ -e "$C/fail-config" ] && exit 1; exit 0 ;;
   "--profile * config --images")
-    echo "ghcr.io/local-control-panel/frankenphp:1@sha256:$D"
+    echo "ghcr.io/orbden/frankenphp:1@sha256:$D"
     [ -e "$C/bad-image" ] && echo "docker.io/library/nginx:latest"
     exit 0 ;;
   "config --services") printf 'mariadb-11\ningress\n'; exit 0 ;;
@@ -1833,25 +1833,16 @@ exit 2
     fn image_policy_accepts_only_digest_pinned_project_images() {
         let ok = |image: &str| image_allowed(image);
         assert!(ok(&format!(
-            "ghcr.io/local-control-panel/frankenphp:1-php8.3@sha256:{DIGEST}"
+            "ghcr.io/orbden/frankenphp:1-php8.3@sha256:{DIGEST}"
         )));
-        assert!(ok(&format!(
-            "ghcr.io/local-control-panel/mariadb@sha256:{DIGEST}"
-        )));
-        assert!(!ok("ghcr.io/local-control-panel/frankenphp:1-php8.3"));
+        assert!(ok(&format!("ghcr.io/orbden/mariadb@sha256:{DIGEST}")));
+        assert!(!ok("ghcr.io/orbden/frankenphp:1-php8.3"));
         assert!(!ok(&format!("docker.io/library/nginx@sha256:{DIGEST}")));
+        assert!(!ok(&format!("ghcr.io/orbden-evil/x@sha256:{DIGEST}")));
+        assert!(!ok(&format!("ghcr.io/orbden/../x@sha256:{DIGEST}")));
+        assert!(!ok(&format!("ghcr.io/orbden/x@sha256:{}", &DIGEST[1..])));
         assert!(!ok(&format!(
-            "ghcr.io/local-control-panel-evil/x@sha256:{DIGEST}"
-        )));
-        assert!(!ok(&format!(
-            "ghcr.io/local-control-panel/../x@sha256:{DIGEST}"
-        )));
-        assert!(!ok(&format!(
-            "ghcr.io/local-control-panel/x@sha256:{}",
-            &DIGEST[1..]
-        )));
-        assert!(!ok(&format!(
-            "ghcr.io/local-control-panel/x@sha256:{}",
+            "ghcr.io/orbden/x@sha256:{}",
             DIGEST.to_uppercase()
         )));
     }
