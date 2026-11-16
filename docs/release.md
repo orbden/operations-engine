@@ -3,11 +3,10 @@
 1. Update `docs/compatibility.md` if this release changes protocol
    compatibility.
 2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. There is no GitHub workflow that builds or publishes releases any more
-   (`.github/workflows/` was removed). Build `x86_64-unknown-linux-gnu` and
-   `aarch64-unknown-linux-gnu` with `cargo build --release --locked`, compute
-   `SHA256SUMS`, sign it with minisign and attach all four files to a GitHub
-   Release by hand.
+3. `.github/workflows/release.yml` builds `x86_64-unknown-linux-gnu` and
+   `aarch64-unknown-linux-gnu` binaries natively (no cross-compilation),
+   computes `SHA256SUMS`, signs it with the repository's minisign key,
+   and publishes a GitHub Release with all four files attached.
 4. Verify a downloaded artifact by hand before trusting the automation:
 
    ```console
