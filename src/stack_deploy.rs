@@ -470,6 +470,8 @@ pub enum NotUp {
     /// These services were not running/healthy within the health bound.
     Unhealthy(Vec<String>),
     Inspect(DockerFailure),
+    /// The service runs, but not on the image that was meant to replace it.
+    WrongImage(String),
 }
 
 /// What the rollback after `NotUp` could not finish.
@@ -530,6 +532,7 @@ impl NotUp {
                 )
             }
             Self::Inspect(_) => "the stack's containers could not be inspected".to_owned(),
+            Self::WrongImage(service) => format!("{service} does not run the replacement image"),
         }
     }
 

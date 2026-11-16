@@ -54,6 +54,9 @@ struct Features {
     /// and a `rateLimit` (enforced by the brute-force guard agent). Without
     /// this field it takes exactly one `mode`.
     admin_paths_combined: bool,
+    /// `security.affected` matches carry the rule's replacement image, digest
+    /// and platforms, and `security.dockerImageReplace` exists.
+    security_image_replace: bool,
 }
 
 #[derive(Serialize)]
@@ -221,6 +224,7 @@ pub const OPERATIONS: &[&str] = &[
     "security.baselineCapture",
     "security.baselineCompare",
     "security.baselinePrune",
+    "security.dockerImageReplace",
     "security.history",
     "security.refresh",
     "security.setPolicy",
@@ -309,6 +313,7 @@ pub fn run() -> Result<Response, ResponseBuildError> {
                 content_recovery_evidence: true,
                 admin_paths: admin_paths_catalog(),
                 admin_paths_combined: true,
+                security_image_replace: true,
             },
         },
     )

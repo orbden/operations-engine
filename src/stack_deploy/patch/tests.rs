@@ -349,3 +349,6 @@ fn rewrite_changes_one_default_and_nothing_else() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+mod security;

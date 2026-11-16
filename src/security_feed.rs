@@ -384,6 +384,11 @@ pub struct ImageRule {
     pub platforms: Vec<String>,
     pub from_digests: Vec<String>,
     pub to_digest: String,
+    /// The full replacement reference (`repository@sha256:<hex>`). Empty in a
+    /// state written before it was kept; such a rule cannot be applied until
+    /// the next refresh.
+    #[serde(default)]
+    pub to_image: String,
 }
 
 fn plain(text: &str, max: usize) -> bool {
@@ -435,7 +440,8 @@ fn image_rule(fix: &serde_json::Value) -> Option<Result<ImageRule, ()>> {
             .iter()
             .map(|v| v.as_str().and_then(pinned_digest))
             .collect::<Option<_>>()?;
-        let to_digest = pinned_digest(action.get("toImage")?.as_str()?)?;
+        let to_image = action.get("toImage")?.as_str()?;
+        let to_digest = pinned_digest(to_image)?;
         (!platforms.is_empty()
             && platforms.len() <= 8
             && !from.is_empty()
@@ -448,6 +454,7 @@ fn image_rule(fix: &serde_json::Value) -> Option<Result<ImageRule, ()>> {
             platforms,
             from_digests: from,
             to_digest,
+            to_image: to_image.to_owned(),
         })
     };
     Some(build().ok_or(()))

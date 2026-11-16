@@ -12,6 +12,7 @@ fn rule(fix: &str, from: &[char], to: char) -> ImageRule {
         platforms: vec!["linux/amd64".into(), "linux/arm64".into()],
         from_digests: from.iter().map(|c| digest(*c)).collect(),
         to_digest: digest(to),
+        to_image: format!("ghcr.io/orbden/frankenphp@{}", digest(to)),
     }
 }
 
@@ -73,6 +74,19 @@ fn a_listed_image_is_affected_and_the_replacement_is_patched() {
         one(facts("linux/arm64", &['c']), &rules).verdict,
         Verdict::Patched
     );
+}
+
+#[test]
+fn a_match_carries_the_replacement_and_its_platforms() {
+    let rules = [rule("f83", &['a'], 'c')];
+    let row = one(facts("linux/amd64", &['a']), &rules);
+    let m = &row.matches[0];
+    assert_eq!(m.to_digest, digest('c'));
+    assert_eq!(
+        m.to_image,
+        format!("ghcr.io/orbden/frankenphp@{}", digest('c'))
+    );
+    assert_eq!(m.platforms, ["linux/amd64", "linux/arm64"]);
 }
 
 #[test]

@@ -42,10 +42,26 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::{
     runtime_patch_status::{self as status, Candidate, Status},
-    security_affected::Docker as InventoryDocker,
+    security_affected::{Docker as InventoryDocker, Inventory},
+    security_feed::ImageRule,
 };
 
 pub const OPERATION: &str = "runtime.patchUpdate";
+/// The catalog-driven variant: same sequence, but the image comes from an
+/// accepted `docker.image.replace` rule and the judgement is by digest.
+pub const SECURITY_OPERATION: &str = "security.dockerImageReplace";
+/// Registries a catalog replacement may come from.
+const CATALOG_PREFIXES: [&str; 2] = ["ghcr.io/orbden/", IMAGE_PREFIX];
+
+/// `ghcr.io/orbden/<name>[:tag]@sha256:<hex>` (or the engine's own prefix).
+pub fn catalog_image(reference: &str) -> bool {
+    CATALOG_PREFIXES.iter().any(|prefix| {
+        reference.strip_prefix(prefix).is_some_and(|rest| {
+            // The stack's image policy checks the name, tag and digest.
+            image_allowed(&format!("{IMAGE_PREFIX}{rest}"))
+        })
+    })
+}
 const PATCH_JOURNAL: &str = "patch-journal.json";
 const MAX_SITES: usize = 500;
 
@@ -59,6 +75,9 @@ pub enum RequestError {
     ConfirmationMissing,
     InvalidRequestId,
     InvalidIdempotencyKey,
+    CatalogNotFresh,
+    UnknownFix,
+    NotCatalogImage,
 }
 
 impl RequestError {
@@ -75,6 +94,13 @@ impl RequestError {
             }
             Self::InvalidRequestId => "request-id is not a canonical UUID",
             Self::InvalidIdempotencyKey => "idempotency-key is invalid",
+            Self::CatalogNotFresh => {
+                "the accepted security catalog is not current; refresh it first"
+            }
+            Self::UnknownFix => "fixId is not a docker.image.replace fix of the accepted catalog",
+            Self::NotCatalogImage => {
+                "the fix's replacement is not a digest-pinned catalog image (ghcr.io/orbden/...)"
+            }
         }
     }
 }
@@ -89,6 +115,15 @@ struct Wire {
     confirm: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SecurityWire {
+    fix_id: String,
+    service: String,
+    sites: Vec<String>,
+    confirm: String,
+}
+
 #[derive(Debug)]
 pub struct Request {
     pub service: String,
@@ -97,6 +132,17 @@ pub struct Request {
     pub sites: Vec<String>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
+    /// Set for `security.dockerImageReplace`: the accepted rule it applies.
+    pub rule: Option<ImageRule>,
+}
+
+fn service_name_ok(service: &str) -> bool {
+    !service.is_empty()
+        && service.len() <= 64
+        && service.as_bytes()[0].is_ascii_alphanumeric()
+        && service
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 fn site_name_ok(name: &str) -> bool {
@@ -120,14 +166,7 @@ impl Request {
             .transpose()
             .map_err(|_| RequestError::InvalidIdempotencyKey)?;
         let wire: Wire = serde_json::from_str(json).map_err(|_| RequestError::Malformed)?;
-        let service_ok = !wire.service.is_empty()
-            && wire.service.len() <= 64
-            && wire.service.as_bytes()[0].is_ascii_alphanumeric()
-            && wire
-                .service
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
-        if !service_ok {
+        if !service_name_ok(&wire.service) {
             return Err(RequestError::InvalidService);
         }
         if !image_allowed(&wire.image) {
@@ -151,7 +190,65 @@ impl Request {
             sites: wire.sites,
             request_id,
             idempotency_key,
+            rule: None,
         })
+    }
+
+    /// `security.dockerImageReplace`: `{fixId, service, sites, confirm}`. The
+    /// image is never taken from the caller; it is the accepted rule's.
+    pub fn parse_security(
+        json: &str,
+        request_id: &str,
+        idempotency_key: Option<&str>,
+        rules: &[ImageRule],
+        catalog_fresh: bool,
+    ) -> Result<Self, RequestError> {
+        let request_id =
+            RequestId::parse(request_id).map_err(|_| RequestError::InvalidRequestId)?;
+        let idempotency_key = idempotency_key
+            .map(IdempotencyKey::parse)
+            .transpose()
+            .map_err(|_| RequestError::InvalidIdempotencyKey)?;
+        let wire: SecurityWire = serde_json::from_str(json).map_err(|_| RequestError::Malformed)?;
+        if !crate::security_affected::runtime_service(&wire.service) {
+            return Err(RequestError::InvalidService);
+        }
+        if wire.sites.len() > MAX_SITES || !wire.sites.iter().all(|s| site_name_ok(s)) {
+            return Err(RequestError::InvalidSites);
+        }
+        if wire.confirm != format!("RESTART {}", wire.service) {
+            return Err(RequestError::ConfirmationMissing);
+        }
+        if !catalog_fresh {
+            return Err(RequestError::CatalogNotFresh);
+        }
+        let rule = rules
+            .iter()
+            .find(|r| {
+                r.fix_id == wire.fix_id
+                    && r.component == crate::security_affected::COMPONENT_PHP_RUNTIME
+            })
+            .ok_or(RequestError::UnknownFix)?;
+        if !catalog_image(&rule.to_image) {
+            return Err(RequestError::NotCatalogImage);
+        }
+        Ok(Self {
+            service: wire.service,
+            image: rule.to_image.clone(),
+            resolved_version: String::new(),
+            sites: wire.sites,
+            request_id,
+            idempotency_key,
+            rule: Some(rule.clone()),
+        })
+    }
+
+    pub fn operation(&self) -> &'static str {
+        if self.rule.is_some() {
+            SECURITY_OPERATION
+        } else {
+            OPERATION
+        }
     }
 }
 
@@ -167,6 +264,9 @@ pub struct PatchResult {
     pub version: String,
     /// The sites the caller confirmed would be interrupted.
     pub sites: Vec<String>,
+    /// The catalog fix that was applied (`security.dockerImageReplace`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_id: Option<String>,
     pub completed_at_unix_secs: u64,
 }
 
@@ -185,6 +285,8 @@ pub enum PatchError {
     ServiceUnknown,
     /// `runtime.patchStatus` did not judge it a patch.
     NotAPatch(&'static str),
+    /// The running image is not one the catalog fix applies to.
+    Refused(&'static str),
     /// The compose file or `.env` does not let the engine change this image.
     NotRewritable(&'static str),
     ValidateFailed(DockerFailure),
@@ -231,6 +333,10 @@ impl PatchError {
                     "the image is not a patch of the running one ({reason}); nothing was changed"
                 ),
             ),
+            Self::Refused(reason) => (
+                ErrorCode::InvalidInput,
+                format!("the fix does not apply to this service ({reason}); nothing was changed"),
+            ),
             Self::NotRewritable(reason) => (
                 ErrorCode::ConfigValidationFailed,
                 format!(
@@ -255,7 +361,7 @@ impl PatchError {
                 ErrorCode::ConfigReloadFailed,
                 format!(
                     "the service did not come up on the new image ({}); the previous image \
-                     was restored",
+                     was restored and the advisory is still unresolved",
                     cause.describe()
                 ),
             ),
@@ -305,8 +411,14 @@ impl RewriteError {
     }
 }
 
+/// The image name without registry organisation, tag or digest, so a catalog
+/// image of another organisation is still the same image.
 fn repository(reference: &str) -> &str {
-    reference.split(['@', ':']).next().unwrap_or(reference)
+    let name = reference.split(['@', ':']).next().unwrap_or(reference);
+    CATALOG_PREFIXES
+        .iter()
+        .find_map(|prefix| name.strip_prefix(prefix))
+        .unwrap_or(name)
 }
 
 /// Replaces the default of the service's `image: ${VAR:-default}` line and
@@ -379,11 +491,11 @@ pub fn execute(
         &scope,
         req.request_id,
         req.idempotency_key.as_ref(),
-        OPERATION,
+        req.operation(),
     )
     .map_err(PatchError::Preflight)?
     {
-        preflight::Outcome::Replay(id) => return replay(&scope, id),
+        preflight::Outcome::Replay(id) => return replay(&scope, id, req.operation()),
         preflight::Outcome::Proceed(value) => value,
     };
     let preflight::Admitted { lock, mut state } = admitted;
@@ -421,10 +533,10 @@ pub fn execute(
     Ok(result)
 }
 
-fn replay(scope: &ManagedRoot, id: RequestId) -> Result<PatchResult, PatchError> {
+fn replay(scope: &ManagedRoot, id: RequestId, operation: &str) -> Result<PatchResult, PatchError> {
     let loaded = state::load(scope, &patch_state_path(id))
         .map_err(|error| PatchError::Io(io::Error::other(format!("{error:?}"))))?;
-    if loaded.operation != OPERATION {
+    if loaded.operation != operation {
         return Err(PatchError::Io(io::Error::other(
             "transaction operation mismatch",
         )));
@@ -487,7 +599,9 @@ fn restore_service(
     bring_up(docker, ctx, service).map_err(|cause| match cause {
         NotUp::PortsNotPublished => RestoreFailure::PortsNotPublished,
         NotUp::Up(failure) | NotUp::Inspect(failure) => RestoreFailure::Up(failure),
-        NotUp::Unhealthy(_) | NotUp::Activation(_) => RestoreFailure::PortsNotPublished,
+        NotUp::Unhealthy(_) | NotUp::Activation(_) | NotUp::WrongImage(_) => {
+            RestoreFailure::PortsNotPublished
+        }
     })
 }
 
@@ -547,42 +661,74 @@ fn run(
     let inventory = InventoryDocker {
         program: ctx.docker,
     };
-    let judged = status::evaluate(
-        &inventory,
-        &status::Request {
-            candidates: vec![Candidate {
-                service: req.service.clone(),
-                digest: Some(digest),
-                resolved_version: Some(req.resolved_version.clone()),
-            }],
-        },
-    );
-    let row = judged
-        .services
-        .iter()
-        .find(|row| row.service == req.service)
-        .ok_or(PatchError::ServiceUnknown)?;
     let completed = || {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
     };
-    match row.status {
-        Status::UpToDate => {
-            return Ok(PatchResult {
-                service: req.service.clone(),
-                changed: false,
-                previous_image: previous_image.clone(),
-                image: req.image.clone(),
-                previous_version: row.running_version.clone(),
-                version: req.resolved_version.clone(),
-                sites: req.sites.clone(),
-                completed_at_unix_secs: completed(),
-            });
+    let fix_id = req.rule.as_ref().map(|rule| rule.fix_id.clone());
+    let running_version: Option<String>;
+    let up_to_date;
+    if let Some(rule) = &req.rule {
+        // The real local image, not the declared tag, decides.
+        let runtimes = inventory
+            .runtimes()
+            .map_err(|_| PatchError::ServiceUnknown)?;
+        let runtime = runtimes
+            .iter()
+            .find(|r| r.service == req.service)
+            .ok_or(PatchError::ServiceUnknown)?;
+        let facts = inventory
+            .image(&runtime.image_id)
+            .map_err(|_| PatchError::ServiceUnknown)?;
+        if !rule.platforms.contains(&facts.platform) {
+            return Err(PatchError::Refused(
+                "the platform is not covered by the fix",
+            ));
         }
-        Status::PatchPending => {}
-        _ => return Err(PatchError::NotAPatch(row.reason)),
+        up_to_date = facts.digests.contains(&rule.to_digest);
+        if !up_to_date && !facts.digests.iter().any(|d| rule.from_digests.contains(d)) {
+            return Err(PatchError::Refused(
+                "the running image is not one the fix lists",
+            ));
+        }
+        running_version = None;
+    } else {
+        let judged = status::evaluate(
+            &inventory,
+            &status::Request {
+                candidates: vec![Candidate {
+                    service: req.service.clone(),
+                    digest: Some(digest),
+                    resolved_version: Some(req.resolved_version.clone()),
+                }],
+            },
+        );
+        let row = judged
+            .services
+            .iter()
+            .find(|row| row.service == req.service)
+            .ok_or(PatchError::ServiceUnknown)?;
+        running_version = row.running_version.clone();
+        up_to_date = match row.status {
+            Status::UpToDate => true,
+            Status::PatchPending => false,
+            _ => return Err(PatchError::NotAPatch(row.reason)),
+        };
+    }
+    if up_to_date {
+        return Ok(PatchResult {
+            service: req.service.clone(),
+            changed: false,
+            previous_image: previous_image.clone(),
+            image: req.image.clone(),
+            previous_version: running_version,
+            version: req.resolved_version.clone(),
+            sites: req.sites.clone(),
+            fix_id,
+            completed_at_unix_secs: completed(),
+        });
     }
 
     // 3. Stage, validate, apply the image policy, pull.
@@ -633,7 +779,10 @@ fn run(
                 ctx.timing.validate,
             )
             .map_err(PatchError::ValidateFailed)?;
-        if let Some(bad) = images.iter().find(|image| !image_allowed(image)) {
+        if let Some(bad) = images
+            .iter()
+            .find(|image| !(image_allowed(image) || req.rule.is_some() && **image == req.image))
+        {
             return Err(PatchError::ImageRejected(bad.clone()));
         }
         if !images.iter().any(|image| image == &req.image) {
@@ -678,7 +827,8 @@ fn run(
     )
     .and_then(|()| root.rename(&rel(staged_name(COMPOSE_FILE)), &rel(COMPOSE_FILE)))
     .map_err(NotUp::Activation)
-    .and_then(|()| bring_up(&docker, ctx, &req.service));
+    .and_then(|()| bring_up(&docker, ctx, &req.service))
+    .and_then(|()| verify_image(ctx, req));
     let _ = remove_if_present(&root, &rel(staged_name(ENV_FILE)));
     if let Err(cause) = activated {
         discard();
@@ -698,11 +848,36 @@ fn run(
         changed: true,
         previous_image,
         image: req.image.clone(),
-        previous_version: row.running_version.clone(),
+        previous_version: running_version,
         version: req.resolved_version.clone(),
         sites: req.sites.clone(),
+        fix_id,
         completed_at_unix_secs: completed(),
     })
+}
+
+/// After the service is up: the running image must really be the fix's
+/// replacement (security fixes only). Anything else is rolled back.
+fn verify_image(ctx: &Context<'_>, req: &Request) -> Result<(), NotUp> {
+    let Some(rule) = &req.rule else {
+        return Ok(());
+    };
+    let inventory = InventoryDocker {
+        program: ctx.docker,
+    };
+    let runtimes = inventory
+        .runtimes()
+        .map_err(|_| NotUp::Inspect(DockerFailure::Unreadable))?;
+    let runs_replacement = runtimes
+        .iter()
+        .find(|r| r.service == req.service)
+        .and_then(|r| inventory.image(&r.image_id).ok())
+        .is_some_and(|facts| facts.digests.contains(&rule.to_digest));
+    if runs_replacement {
+        Ok(())
+    } else {
+        Err(NotUp::WrongImage(req.service.clone()))
+    }
 }
 
 #[cfg(test)]
