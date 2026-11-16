@@ -64,8 +64,8 @@ fn one(image: &str, f: ImageFacts, c: Option<Candidate>) -> Row {
     evaluate(&fake, &request).services.remove(0)
 }
 
-const VALKEY: &str = "ghcr.io/local-control-panel/valkey:9-alpine@sha256:aaaa";
-const MARIA: &str = "ghcr.io/local-control-panel/mariadb:11.4@sha256:aaaa";
+const VALKEY: &str = "ghcr.io/orbden/valkey:9-alpine@sha256:aaaa";
+const MARIA: &str = "ghcr.io/orbden/mariadb:11.4@sha256:aaaa";
 
 #[test]
 fn parses_versions() {
@@ -265,7 +265,7 @@ fn parses_docker_output() {
 
 #[test]
 fn postgres_minor_releases_are_patches_of_the_major_line() {
-    const PG: &str = "ghcr.io/local-control-panel/postgres:18@sha256:aaaa";
+    const PG: &str = "ghcr.io/orbden/postgres:18@sha256:aaaa";
     let f = facts(&['b'], Some(("PG_VERSION", "18.1")), None);
     let row = one(PG, f.clone(), Some(cand(Some('c'), Some("18.2"))));
     assert_eq!(

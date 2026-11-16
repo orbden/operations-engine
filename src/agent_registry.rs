@@ -1,5 +1,5 @@
 //! `agent.installFromRegistry` and `agent.approve`: agents that live in the
-//! open `local-control-panel/agents` repository instead of in this binary.
+//! open `orbden/agents` repository instead of in this binary.
 //!
 //! The caller never supplies code or an address. A request names an agent, the
 //! release tag it was published in and the SHA-256 of the agent's script. The

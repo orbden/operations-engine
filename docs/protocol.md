@@ -1073,7 +1073,7 @@ The result lists, per package, the installed version before and after (`dpkg-que
 
 `runtime patch-update --request-file <file> --request-id <id> [--idempotency-key <k>]` moves one container of the managed stack to a newer image of the same release line, by hand. Restarting a shared PHP or database container interrupts every site on it, so there is no automatic path. The root-owned request file is `{"service","image","resolvedVersion","sites":[...],"confirm":"RESTART <service>"}`; unknown keys are refused. `confirm` must be exactly `RESTART <service>`, and `sites` is the list of host names the caller told the user would be interrupted; the engine cannot enumerate them, so it records the list in the result and the audit trail.
 
-The engine decides what a patch is. It refuses, without changing anything, unless `image` is a digest-pinned `ghcr.io/local-control-panel/...` reference of the repository the service already runs, `runtime.patchStatus` judges it `patchPending` from the running image's version and `resolvedVersion` (another line, an older image or an unreadable version is `INVALID_INPUT`), and the compose file's image for the service is a `${VAR:-default}` whose variable `.env` does not set. An image the service already runs is a no-op (`changed: false`).
+The engine decides what a patch is. It refuses, without changing anything, unless `image` is a digest-pinned `ghcr.io/orbden/...` reference of the repository the service already runs, `runtime.patchStatus` judges it `patchPending` from the running image's version and `resolvedVersion` (another line, an older image or an unreadable version is `INVALID_INPUT`), and the compose file's image for the service is a `${VAR:-default}` whose variable `.env` does not set. An image the service already runs is a no-op (`changed: false`).
 
 Under the shared stack lock and the request's transaction it stages the compose file with only that service's default image replaced, validates it, applies the image policy to every service and pulls that service, writes a journal, backs the live file up as `docker-compose.yml.rollback-<request id>` and moves the staged file in. `docker compose up -d --no-deps <service>` then recreates only that service, which must be running and healthy within the health bound (ingress must also publish `443/tcp`). If it is not, the file is restored and the service is brought up on the previous image again (`CONFIG_RELOAD_FAILED`, previous image restored), or `CONFIG_RECOVERY_FAILED` when that fails too. A journal left by a dead process is rolled back by the next run first. A replay of a finished request returns the recorded result or failure. The result and the journal hold image references, versions and site names only. Linux hosts only.
 
@@ -1128,7 +1128,7 @@ the newest 200 entries within 90 days. A line that cannot be parsed is skipped a
 `unreadableLines`; a file that cannot be read (or is over 1 MiB) is reported as
 `available: false` with no entries, never as an empty history, and is not overwritten.
 
-`security affected` answers which managed PHP runtimes (compose services `runtime-<n>` of the
+`security affected` answers which managed PHP runtimes (compose services `runtime-<n>` or `runtime-fp<n>-php<nn>` of the
 `wcp` project) run an image that the accepted manifest's `docker.image.replace` rules name. It is
 local and read-only: it reads the rules stored at the last accepted refresh (reduced to `sha256`
 digests; a rule that is malformed, uses a tag or lists its own replacement is counted in
@@ -1155,7 +1155,7 @@ Each match also carries the rule's replacement (`toImage` as `repository@sha256:
 applies one accepted `docker.image.replace` fix of the security catalog to one managed PHP runtime,
 by hand. The root-owned request file is `{"fixId","service","sites":[...],"confirm":"RESTART <service>"}`;
 unknown keys are refused, so the image can never come from the caller: it is the replacement of
-the rule the engine accepted at its last refresh. `service` must be a `runtime-<n>` service, and
+the rule the engine accepted at its last refresh. `service` must be a `runtime-<n>` or `runtime-fp<n>-php<nn>` service, and
 `confirm` exactly `RESTART <service>` (`sites` is the list the caller told the user would be
 interrupted; it is recorded).
 

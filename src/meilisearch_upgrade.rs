@@ -19,7 +19,7 @@ use crate::{
 
 pub const OPERATION: &str = "meilisearch.upgrade";
 pub const TARGET_VERSION: &str = "1.53.2";
-pub const TARGET_IMAGE: &str = "ghcr.io/local-control-panel/meilisearch:1.53.2@sha256:c94e58ca09662dd6e65e8f1b0fd145767be3da7d5422a863a27b8d2b68e090c9";
+pub const TARGET_IMAGE: &str = "ghcr.io/orbden/meilisearch:1.53.2@sha256:c94e58ca09662dd6e65e8f1b0fd145767be3da7d5422a863a27b8d2b68e090c9";
 const MAX_SECRET_BYTES: usize = 4096;
 const MAX_PROBES: usize = 32;
 const MAX_QUERY_BYTES: usize = 4096;
@@ -192,8 +192,8 @@ mod tests {
 
         for target in [
             "getmeili/meilisearch:v1.53.2",
-            "ghcr.io/local-control-panel/meilisearch:latest",
-            "ghcr.io/local-control-panel/meilisearch:1.53.2",
+            "ghcr.io/orbden/meilisearch:latest",
+            "ghcr.io/orbden/meilisearch:1.53.2",
         ] {
             assert_eq!(
                 UpgradeRequest::parse(&plan(target, "secret"), ID, None).unwrap_err(),

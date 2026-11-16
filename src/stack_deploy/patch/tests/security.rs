@@ -6,9 +6,9 @@ use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
 const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 const ID_2: &str = "123e4567-e89b-12d3-a456-426614174001";
-const OLD: &str = "ghcr.io/local-control-panel/frankenphp:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OLD: &str = "ghcr.io/orbden/frankenphp:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const NEW: &str = "ghcr.io/orbden/frankenphp:1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const COMPOSE: &str = "services:\n  ingress:\n    image: ${WCP_INGRESS_IMAGE:-ghcr.io/local-control-panel/caddy:1@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}\n  runtime-1:\n    image: ${WCP_FRANKENPHP_IMAGE:-ghcr.io/local-control-panel/frankenphp:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n    restart: unless-stopped\n";
+const COMPOSE: &str = "services:\n  ingress:\n    image: ${WCP_INGRESS_IMAGE:-ghcr.io/orbden/caddy:1@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}\n  runtime-1:\n    image: ${WCP_FRANKENPHP_IMAGE:-ghcr.io/orbden/frankenphp:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}\n    restart: unless-stopped\n";
 const ENV: &str = "DB_PASSWORD='s3cret'\n";
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -207,7 +207,7 @@ fn a_service_that_does_not_run_the_replacement_is_rolled_back() {
 #[test]
 fn an_image_the_fix_does_not_list_is_refused_without_touching_the_stack() {
     let fx = Fixture::new();
-    fx.set_current("ghcr.io/local-control-panel/frankenphp:1@sha256:eeee");
+    fx.set_current("ghcr.io/orbden/frankenphp:1@sha256:eeee");
     let error = fx.run(ID).unwrap_err();
     assert!(matches!(error, PatchError::Refused(_)), "{error:?}");
     assert_eq!(fx.compose(), COMPOSE);

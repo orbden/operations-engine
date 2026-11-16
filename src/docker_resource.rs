@@ -1040,7 +1040,7 @@ mod tests {
             "nginx",
             "nginx:1.27",
             "library/nginx:1.27-alpine",
-            "ghcr.io/local-control-panel/frankenphp:latest",
+            "ghcr.io/orbden/frankenphp:latest",
             "docker.io/library/redis@sha256:0000000000000000000000000000000000000000000000000000000000000000",
             "quay.io/prometheus/node-exporter:v1.8.2",
             "mcr.microsoft.com/dotnet/runtime:8.0",

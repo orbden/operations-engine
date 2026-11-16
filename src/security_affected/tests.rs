@@ -179,6 +179,27 @@ fn only_runtime_services_are_components_and_ids_are_checked() {
 }
 
 #[test]
+fn runtime_service_accepts_real_names_and_refuses_the_rest() {
+    for ok in ["runtime-1", "runtime-fp1-php83", "runtime-fp2-php84"] {
+        assert!(runtime_service(ok), "{ok}");
+    }
+    for bad in [
+        "runtime-",
+        "runtime-x",
+        "runtime-fp-php83",
+        "runtime-fp1-php",
+        "runtime-fp1-php83-x",
+        "runtime-fp1-php83; rm",
+        "runtime-FP1-php83",
+        "runtime-fp1-node20",
+        "wcp-runtime-fp1-php83-1",
+        "mariadb-11",
+    ] {
+        assert!(!runtime_service(bad), "{bad}");
+    }
+}
+
+#[test]
 fn registry_digests_are_reduced_to_their_hash_and_malformed_ones_dropped() {
     let json = format!(
         r#"[{{"Os":"linux","Architecture":"arm64","RepoDigests":["ghcr.io/x/frankenphp@{a}","other/y@sha256:short","nodigest"]}}]"#,
