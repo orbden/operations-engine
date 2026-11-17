@@ -624,6 +624,8 @@ pub fn incomplete(
                                 Some("joomla.restoreUpdate")
                             } else if crate::stack_deploy::available(&dir, &record) {
                                 Some("stack.recoverDeploy")
+                            } else if crate::backup_recover::available(&record) {
+                                Some("backup.discardPartial")
                             } else {
                                 None
                             },
@@ -730,6 +732,8 @@ fn recovery_action(
         Some("site.recoverDeployment")
     } else if crate::stack_deploy::available(scope, record) {
         Some("stack.recoverDeploy")
+    } else if crate::backup_recover::available(record) {
+        Some("backup.discardPartial")
     } else if crate::db_restore::protected::available(scope, record) {
         Some("db.recoverRestore")
     } else if crate::site_create::available(scope, record) {
@@ -1304,6 +1308,42 @@ mod tests {
         };
         assert_eq!(by(journaled), Some("stack.recoverDeploy"));
         assert_eq!(by(earlier), None);
+    }
+
+    #[test]
+    fn an_interrupted_backup_names_backup_discard_partial() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = ManagedRoot::open(&TrustedRoot::parse(directory.path()).unwrap()).unwrap();
+        for scope in ["db-backup/shop", "backup-import-remote"] {
+            for sub in ["transactions", "locks"] {
+                std::fs::create_dir_all(directory.path().join(scope).join(sub)).unwrap();
+            }
+        }
+        let dump = RequestId::parse("823e4567-e89b-12d3-a456-426614174000").unwrap();
+        let import = RequestId::parse("923e4567-e89b-12d3-a456-426614174000").unwrap();
+        for (scope, id, operation) in [
+            ("db-backup/shop", dump, "backup.createDatabase"),
+            ("backup-import-remote", import, "backup.importRemote"),
+        ] {
+            let dir = root
+                .open_managed_dir(&SiteRelativePath::parse(scope).unwrap())
+                .unwrap();
+            create(
+                &dir,
+                &SiteRelativePath::parse(format!("transactions/{id}.json")).unwrap(),
+                &TransactionState::start(id, None, operation),
+            )
+            .unwrap();
+        }
+        let found = incomplete(&root, directory.path(), None).unwrap();
+        for id in [dump, import] {
+            let row = found
+                .interrupted
+                .iter()
+                .find(|i| i.request_id == id)
+                .unwrap();
+            assert_eq!(row.recovered_by, Some("backup.discardPartial"));
+        }
     }
 
     #[test]

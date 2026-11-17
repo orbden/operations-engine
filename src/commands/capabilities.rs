@@ -103,6 +103,7 @@ pub const OPERATIONS: &[&str] = &[
     "operation.list",
     "operation.incomplete",
     "backup.delete",
+    "backup.discardPartial",
     "backup.importRemote",
     "backup.installRclone",
     "backup.createDatabase",
