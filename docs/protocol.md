@@ -1510,6 +1510,11 @@ the call can be repeated.
 "stack.recoverDeploy"` only for an inactive `IN_PROGRESS` record whose journal
 is present and names that request.
 
+`operation.incomplete` names `stack.recoverDeploy` as `recoveredBy` for the same
+record. With the `failpoints` feature and `WCP_FAILPOINT=stack.afterActivate`
+the engine kills itself right after the files are swapped, which is how the
+workflow tests produce this state.
+
 ## `site.create` and `site.recoverCreate`
 
 `site create --request-file <root-owned JSON> --request-id <uuid>
