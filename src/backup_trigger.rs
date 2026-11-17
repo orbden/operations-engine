@@ -124,6 +124,9 @@ pub fn execute(
     let state_path =
         SiteRelativePath::parse(format!("transactions/{}.json", req.request_id)).unwrap();
     let audit_path = SiteRelativePath::parse("audit/events.jsonl").unwrap();
+    // The transaction is in progress and the agent has not started: a crash here
+    // is what `backup.discardPartial --trigger` closes.
+    crate::failpoint::hit("backup.trigger.beforeRun");
     let output = match process::run(
         &ProcessRequest::new(ctx.bash_program).args([ctx.agent_path]),
         &ProcessLimits {

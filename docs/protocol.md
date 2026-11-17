@@ -1538,7 +1538,10 @@ transaction that is no longer in progress it is `{"closed": false,
 A trigger or a deletion has no partial output (the agent has its own lock and
 cleanup; a deletion removes one file in one step), so for those nothing is
 removed and the record is closed with the message that its outcome was not
-confirmed. The agent's own work is not stopped.
+confirmed. The agent's own work is not stopped. With the `failpoints` feature,
+`WCP_FAILPOINT=backup.trigger.beforeRun` and `backup.delete.beforeRemove` kill
+those operations after their transaction starts, which is how the workflow tests
+produce these records.
 
 `operation.status` (database scope) and `operation.incomplete` name
 `backup.discardPartial` for such records. With the `failpoints` feature,
