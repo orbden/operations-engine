@@ -87,6 +87,9 @@ pub fn execute(
         ));
     }
 
+    // The transaction is in progress and the file is still there: a crash here
+    // is what `backup.discardPartial --delete-scope` closes.
+    crate::failpoint::hit("backup.delete.beforeRemove");
     let deleted = match ctx.backup_root.remove_file(&req.relative_path) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
