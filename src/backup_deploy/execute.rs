@@ -109,6 +109,7 @@ pub fn execute(
     }
     let activated = match activation::activate(
         ctx.config_root,
+        &scope,
         &req.config,
         &req.request_id.to_string(),
         ctx.crontab_program,
@@ -208,7 +209,7 @@ mod tests {
         fs::write(
             &crontab,
             format!(
-                "#!/bin/sh\ncat >/dev/null\necho run >> '{}'\n",
+                "#!/bin/sh\n[ \"$1\" = -l ] && exit 1\ncat >/dev/null\necho run >> '{}'\n",
                 marker.display()
             ),
         )

@@ -1517,9 +1517,12 @@ workflow tests produce this state.
 
 ## `backup.discardPartial`
 
-`backup discard-partial (--database <name> | --import) --interrupted-request-id
-<uuid> --request-id <uuid>` closes a `backup.createDatabase` (`--database`) or
-`backup.importRemote` (`--import`) that died mid-write. Neither can be resumed:
+`backup discard-partial (--database <name> | --import | --trigger |
+--delete-scope <sha256>) --interrupted-request-id <uuid> --request-id <uuid>`
+closes a `backup.createDatabase` (`--database`; the scheduled run records the
+same operation), `backup.importRemote` (`--import`), `backup.triggerNow`
+(`--trigger`) or `backup.delete` (`--delete-scope`, the scope directory name:
+the SHA-256 of the path, 64 lowercase hex) that died. Neither can be resumed:
 each streams into a file named after its own request id
 (`<database>_<time>.sql.partial-<id>` in `/root/db-backups`,
 `<id>_<name>.partial` in the imports directory) and publishes it by a final
@@ -1532,10 +1535,40 @@ starts a backup. The result is `{"closed": true, "filesRemoved": 1}`; for a
 transaction that is no longer in progress it is `{"closed": false,
 "filesRemoved": 0}` and nothing is touched.
 
+A trigger or a deletion has no partial output (the agent has its own lock and
+cleanup; a deletion removes one file in one step), so for those nothing is
+removed and the record is closed with the message that its outcome was not
+confirmed. The agent's own work is not stopped.
+
 `operation.status` (database scope) and `operation.incomplete` name
 `backup.discardPartial` for such records. With the `failpoints` feature,
 `WCP_FAILPOINT=backup.afterPartialCreate` kills `backup.createDatabase` right
 after the partial file is created.
+
+## `backup.recoverConfig`
+
+`backup recover-config --interrupted-request-id <uuid> --request-id <uuid>`
+rolls back a `backup.activateConfig` that died after it started changing the
+live files. Before its first live write the activation saves, under
+`recovery/<request id>/` in the `backup-activate` state scope (root-only), a
+journal with its phase (`begin`, `files`, `crontab`), the previous content and
+mode of each of the five managed files, and root's previous crontab. Recovery
+takes the scope lock (a live original is `CONFLICT`), requires the named
+transaction to be an `IN_PROGRESS` activation with a journal (`CONFLICT` when
+there is none: a record from before the journal cannot be proven and needs a
+person), puts the previous files back (a file that did not exist is removed),
+puts the previous crontab back (or removes it when there was none) when the
+crontab install had started, removes the staging directory, marks the
+transaction `FAILED` (`CANCELLED`) and drops the journal. It never activates
+anything and takes no secrets. A rollback that cannot finish returns
+`CONFIG_RECOVERY_FAILED` and keeps the journal so the call can be repeated.
+
+The result is `{"recovered": true, "filesRestored": 5, "crontabRestored":
+true}`; for a transaction no longer in progress it is `{"recovered": false,
+...}` and nothing is touched. `operation.status` and `operation.incomplete`
+name `backup.recoverConfig` for such records. With the `failpoints` feature,
+`WCP_FAILPOINT=backup.activate.afterFiles`, `backup.activate.beforeCrontab` and
+`backup.activate.afterCrontab` kill the activation at those points.
 
 ## `site.create` and `site.recoverCreate`
 

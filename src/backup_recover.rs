@@ -1,5 +1,7 @@
-//! `backup.discardPartial`: closes a database backup (`backup.createDatabase`)
-//! or a remote import (`backup.importRemote`) whose process died mid-write.
+//! `backup.discardPartial`: closes a backup operation whose process died: a
+//! database backup (`backup.createDatabase`, which the scheduled run uses
+//! too), a remote import (`backup.importRemote`), an immediate agent run
+//! (`backup.triggerNow`) or a deletion (`backup.delete`).
 //!
 //! Neither operation can be resumed: each streams into a file named after its
 //! own request id (`<database>_<time>.sql.partial-<request id>` in the backup
@@ -10,13 +12,18 @@
 //! interrupted request's partial file(s) and marks the transaction failed. It
 //! never starts a backup and never touches a finished one. Taking the scope
 //! lock is the proof that the original process is gone.
+//!
+//! A trigger or a deletion leaves no partial output of its own: the agent has
+//! its own lock and cleanup, and a deletion removes one file in one step. For
+//! those the record is closed without claiming what happened (the outcome is
+//! not confirmed), and nothing is removed. The agent's own work is not stopped.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backup_create, backup_import_remote,
+    backup_create, backup_delete, backup_import_remote, backup_trigger,
     db_restore::{DatabaseName, RestoreRequestError},
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -32,18 +39,24 @@ use crate::{
 
 pub const OPERATION: &str = "backup.discardPartial";
 const IMPORT_SCOPE: &str = "backup-import-remote";
+const TRIGGER_SCOPE: &str = "backup-trigger";
 
 /// Which interrupted backup to close.
 #[derive(Debug, Clone)]
 pub enum Target {
     Database(DatabaseName),
     Import,
+    /// `backup.triggerNow`: the immediate run of the backup agent.
+    Trigger,
+    /// `backup.delete`: the scope is the SHA-256 (64 lowercase hex) of the file path.
+    Delete(String),
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum RequestError {
-    /// Exactly one of `--database` and `--import` is required.
+    /// Exactly one of `--database`, `--import`, `--trigger` and `--delete-scope` is required.
     TargetRequired,
+    InvalidDeleteScope,
     InvalidDatabase(RestoreRequestError),
     InvalidRequestId,
 }
@@ -58,15 +71,33 @@ impl Request {
     pub fn parse(
         database: Option<&str>,
         import: bool,
+        trigger: bool,
+        delete_scope: Option<&str>,
         interrupted: &str,
         request_id: &str,
     ) -> Result<Self, RequestError> {
-        let target = match (database, import) {
-            (Some(name), false) => {
-                Target::Database(DatabaseName::parse(name).map_err(RequestError::InvalidDatabase)?)
+        let chosen = usize::from(database.is_some())
+            + usize::from(import)
+            + usize::from(trigger)
+            + usize::from(delete_scope.is_some());
+        if chosen != 1 {
+            return Err(RequestError::TargetRequired);
+        }
+        let target = if let Some(name) = database {
+            Target::Database(DatabaseName::parse(name).map_err(RequestError::InvalidDatabase)?)
+        } else if import {
+            Target::Import
+        } else if trigger {
+            Target::Trigger
+        } else {
+            let hash = delete_scope.unwrap_or_default();
+            let hex = hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+            if hash.len() != 64 || !hex {
+                return Err(RequestError::InvalidDeleteScope);
             }
-            (None, true) => Target::Import,
-            _ => return Err(RequestError::TargetRequired),
+            Target::Delete(hash.to_owned())
         };
         Ok(Self {
             target,
@@ -129,6 +160,8 @@ fn scope_path(target: &Target) -> SiteRelativePath {
     match target {
         Target::Database(database) => rel(format!("db-backup/{}", database.as_str())),
         Target::Import => rel(IMPORT_SCOPE),
+        Target::Trigger => rel(TRIGGER_SCOPE),
+        Target::Delete(hash) => rel(format!("backup-delete/{hash}")),
     }
 }
 
@@ -136,6 +169,8 @@ fn operation_of(target: &Target) -> &'static str {
     match target {
         Target::Database(_) => backup_create::OPERATION,
         Target::Import => backup_import_remote::OPERATION,
+        Target::Trigger => backup_trigger::OPERATION,
+        Target::Delete(_) => backup_delete::OPERATION,
     }
 }
 
@@ -145,7 +180,10 @@ pub fn available(record: &TransactionState) -> bool {
     record.status == TransactionStatus::InProgress
         && matches!(
             record.operation.as_str(),
-            backup_create::OPERATION | backup_import_remote::OPERATION
+            backup_create::OPERATION
+                | backup_import_remote::OPERATION
+                | backup_trigger::OPERATION
+                | backup_delete::OPERATION
         )
 }
 
@@ -181,12 +219,17 @@ pub fn execute(ctx: &Context<'_>, req: &Request) -> Result<DiscardResult, Error>
             remove_dump_partials(ctx.backup_root, database, req.interrupted)?
         }
         Target::Import => remove_import_partials(ctx.import_root, req.interrupted)?,
+        // No partial output of their own; see the module documentation.
+        Target::Trigger | Target::Delete(_) => 0,
+    };
+    let message = match req.target {
+        Target::Trigger | Target::Delete(_) => {
+            "interrupted; closed by backup.discardPartial, the outcome was not confirmed"
+        }
+        _ => "interrupted; the partial output was discarded",
     };
     record
-        .mark_failed(
-            ErrorCode::Cancelled,
-            "interrupted; the partial output was discarded",
-        )
+        .mark_failed(ErrorCode::Cancelled, message)
         .map_err(|_| Error::WrongOperation)?;
     state::save(&scope, &state_path, &record)
         .map_err(|error| Error::Io(std::io::Error::other(format!("{error:?}"))))?;
@@ -322,7 +365,7 @@ mod tests {
     }
 
     fn database(id: &str) -> Request {
-        Request::parse(Some("shop"), false, id, HOLDER).unwrap()
+        Request::parse(Some("shop"), false, false, None, id, HOLDER).unwrap()
     }
 
     #[test]
@@ -389,7 +432,7 @@ mod tests {
         for path in [&own, &finished, &foreign] {
             std::fs::write(path, "x").unwrap();
         }
-        let request = Request::parse(None, true, DB_ID, HOLDER).unwrap();
+        let request = Request::parse(None, true, false, None, DB_ID, HOLDER).unwrap();
         let result = execute(&fx.ctx(), &request).unwrap();
         assert_eq!(
             result,
@@ -440,24 +483,93 @@ mod tests {
         assert!(matches!(
             execute(
                 &fx.ctx(),
-                &Request::parse(Some("shop"), false, HOLDER, HOLDER).unwrap()
+                &Request::parse(Some("shop"), false, false, None, HOLDER, HOLDER).unwrap()
             ),
             Err(Error::NotFound)
         ));
     }
 
     #[test]
+    fn a_trigger_or_a_deletion_that_died_is_closed_without_removing_anything() {
+        let fx = Fixture::new();
+        let hash = "ab".repeat(32);
+        let trigger = fx.interrupted("backup-trigger", DB_ID, backup_trigger::OPERATION);
+        let delete = fx.interrupted(
+            &format!("backup-delete/{hash}"),
+            OTHER_ID,
+            backup_delete::OPERATION,
+        );
+        // Files beside them are not theirs to touch.
+        std::fs::write(fx._dir.path().join("backups/shop_1.sql"), "dump").unwrap();
+
+        let trigger_request = Request::parse(None, false, true, None, DB_ID, HOLDER).unwrap();
+        assert_eq!(
+            execute(&fx.ctx(), &trigger_request).unwrap(),
+            DiscardResult {
+                closed: true,
+                files_removed: 0
+            }
+        );
+        assert_eq!(fx.status(&trigger, DB_ID), TransactionStatus::Failed);
+        let closed = state::load(&trigger, &rel(format!("transactions/{DB_ID}.json"))).unwrap();
+        let message = closed.outcome.and_then(|outcome| outcome.error_message);
+        assert!(
+            message.is_some_and(|text| text.contains("outcome was not confirmed")),
+            "the record must not claim what happened"
+        );
+
+        let delete_request =
+            Request::parse(None, false, false, Some(&hash), OTHER_ID, HOLDER).unwrap();
+        assert_eq!(
+            execute(&fx.ctx(), &delete_request).unwrap(),
+            DiscardResult {
+                closed: true,
+                files_removed: 0
+            }
+        );
+        assert_eq!(fx.status(&delete, OTHER_ID), TransactionStatus::Failed);
+        assert!(fx._dir.path().join("backups/shop_1.sql").exists());
+
+        // A trigger record is not a deletion's, and vice versa.
+        let wrong = Request::parse(None, false, false, Some(&hash), DB_ID, HOLDER).unwrap();
+        assert!(matches!(
+            execute(&fx.ctx(), &wrong),
+            Err(Error::NotFound) | Err(Error::WrongOperation)
+        ));
+    }
+
+    #[test]
+    fn the_delete_scope_must_be_a_sha256_in_lowercase_hex() {
+        for bad in [
+            "",
+            "abc",
+            &"AB".repeat(32),
+            &"zz".repeat(32),
+            &"ab".repeat(33),
+        ] {
+            assert!(matches!(
+                Request::parse(None, false, false, Some(bad), DB_ID, HOLDER),
+                Err(RequestError::InvalidDeleteScope)
+            ));
+        }
+        assert!(matches!(
+            Request::parse(None, true, true, None, DB_ID, HOLDER),
+            Err(RequestError::TargetRequired)
+        ));
+    }
+
+    #[test]
     fn exactly_one_target_is_required() {
         assert!(matches!(
-            Request::parse(None, false, DB_ID, HOLDER),
+            Request::parse(None, false, false, None, DB_ID, HOLDER),
             Err(RequestError::TargetRequired)
         ));
         assert!(matches!(
-            Request::parse(Some("shop"), true, DB_ID, HOLDER),
+            Request::parse(Some("shop"), true, false, None, DB_ID, HOLDER),
             Err(RequestError::TargetRequired)
         ));
         assert!(matches!(
-            Request::parse(Some("a b;"), false, DB_ID, HOLDER),
+            Request::parse(Some("a b;"), false, false, None, DB_ID, HOLDER),
             Err(RequestError::InvalidDatabase(_))
         ));
     }
