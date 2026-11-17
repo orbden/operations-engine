@@ -13,9 +13,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
-The CI workflow runs the same checks on Linux and verifies that the project
-still compiles with the minimum supported Rust version declared in
-`Cargo.toml`.
+After pushing, `scripts/ci-local.sh` runs the same checks and the minimum
+supported Rust version check declared in `Cargo.toml`, reports them as the two
+commit statuses branch protection requires, and keeps one result comment on the
+pull request. Checks are not run in GitHub Actions.
 
 ## Design rules
 

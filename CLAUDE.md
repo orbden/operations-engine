@@ -8,8 +8,9 @@ Never add a `Co-Authored-By:` trailer to commit messages in this repository.
 
 `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`,
 `cargo test --all-features`. CI also checks the minimum supported Rust version.
-Checks run locally: `scripts/ci-local.sh` runs them on HEAD and reports the two
-required checks as commit statuses on the pull request (hosted Actions are manual only).
+Checks run locally, never in GitHub Actions: after pushing, `scripts/ci-local.sh` runs them on
+HEAD, reports the two required checks as commit statuses and keeps one result comment on the
+pull request. Merge only when both statuses are green; do not use `--admin`.
 
 ## Rules that always apply
 
