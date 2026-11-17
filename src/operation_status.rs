@@ -622,6 +622,8 @@ pub fn incomplete(
                                 Some("drupal.restoreUpdate")
                             } else if JOOMLA_UPDATES.contains(&record.operation.as_str()) {
                                 Some("joomla.restoreUpdate")
+                            } else if crate::stack_deploy::available(&dir, &record) {
+                                Some("stack.recoverDeploy")
                             } else {
                                 None
                             },
@@ -1262,6 +1264,46 @@ mod tests {
         assert_eq!(by("wordpress.clone"), Some("site.reconcile"));
         assert_eq!(by("site.deploy"), None);
         assert_eq!(by("drupal.updateCore"), Some("drupal.restoreUpdate"));
+    }
+
+    #[test]
+    fn an_interrupted_stack_deploy_with_its_journal_names_stack_recover_deploy() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = ManagedRoot::open(&TrustedRoot::parse(directory.path()).unwrap()).unwrap();
+        let scope = directory.path().join("stacks/wcp");
+        for sub in ["transactions", "locks"] {
+            std::fs::create_dir_all(scope.join(sub)).unwrap();
+        }
+        let journaled = RequestId::parse("623e4567-e89b-12d3-a456-426614174000").unwrap();
+        let earlier = RequestId::parse("723e4567-e89b-12d3-a456-426614174000").unwrap();
+        // The journal belongs to one deploy only.
+        std::fs::write(
+            scope.join("journal.json"),
+            format!(r#"{{"requestId":"{journaled}","existed":[]}}"#),
+        )
+        .unwrap();
+        let dir = root
+            .open_managed_dir(&SiteRelativePath::parse("stacks/wcp").unwrap())
+            .unwrap();
+        for id in [journaled, earlier] {
+            create(
+                &dir,
+                &SiteRelativePath::parse(format!("transactions/{id}.json")).unwrap(),
+                &TransactionState::start(id, None, "stack.deploy"),
+            )
+            .unwrap();
+        }
+        let found = incomplete(&root, directory.path(), None).unwrap();
+        let by = |id: RequestId| {
+            found
+                .interrupted
+                .iter()
+                .find(|i| i.request_id == id)
+                .unwrap()
+                .recovered_by
+        };
+        assert_eq!(by(journaled), Some("stack.recoverDeploy"));
+        assert_eq!(by(earlier), None);
     }
 
     #[test]

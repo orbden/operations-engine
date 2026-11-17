@@ -1108,7 +1108,12 @@ fn deploy(
         }
         let outcome = activate(&root, ctx.owner, req.request_id, &previous)
             .map_err(NotUp::Activation)
-            .and_then(|()| converge(&docker, &services, &ctx.timing));
+            .and_then(|()| {
+                // The files are swapped and the journal is on disk; a crash here
+                // is what `stack.recoverDeploy` exists for.
+                crate::failpoint::hit("stack.afterActivate");
+                converge(&docker, &services, &ctx.timing)
+            });
         if let Err(cause) = outcome {
             discard_staged();
             return match restore(&root, &docker, &ctx.timing, req.request_id, &existed) {
