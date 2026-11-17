@@ -6,6 +6,10 @@ pub mod activation;
 #[cfg(unix)]
 pub mod execute;
 #[cfg(unix)]
+pub mod journal;
+#[cfg(unix)]
+pub mod recover;
+#[cfg(unix)]
 pub mod staging;
 
 pub const OPERATION: &str = "backup.activateConfig";

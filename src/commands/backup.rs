@@ -34,14 +34,22 @@ pub fn run(command: BackupCommand) -> Result<Response, ResponseBuildError> {
             request_id,
             idempotency_key,
         } => trigger_now(&request_id, idempotency_key.as_deref()),
+        BackupCommand::RecoverConfig {
+            interrupted_request_id,
+            request_id,
+        } => recover_config(&interrupted_request_id, &request_id),
         BackupCommand::DiscardPartial {
             database,
             import,
+            trigger,
+            delete_scope,
             interrupted_request_id,
             request_id,
         } => discard_partial(
             database.as_deref(),
             import,
+            trigger,
+            delete_scope.as_deref(),
             &interrupted_request_id,
             &request_id,
         ),
@@ -401,9 +409,82 @@ fn activate_config(
     }
 }
 
+fn recover_config(
+    interrupted_request_id: &str,
+    request_id: &str,
+) -> Result<Response, ResponseBuildError> {
+    const OP: &str = backup_deploy::recover::RECOVER_OPERATION;
+    let (Ok(interrupted), Ok(holder)) = (
+        crate::transaction::RequestId::parse(interrupted_request_id),
+        crate::transaction::RequestId::parse(request_id),
+    ) else {
+        return Ok(Response::failure(
+            OP,
+            ErrorCode::InvalidInput,
+            "request ids must be canonical UUIDs",
+        ));
+    };
+    #[cfg(unix)]
+    {
+        use crate::{config::EngineConfig, filesystem::ManagedRoot, site::TrustedRoot};
+        let Ok(config) = EngineConfig::load_root_owned(std::path::Path::new(CONFIG_PATH)) else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+            ));
+        };
+        let Ok(state) = ManagedRoot::open(&config.state_root) else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                "engine state root is unavailable",
+            ));
+        };
+        let Some(config_root) = TrustedRoot::parse(std::path::Path::new("/root/.wcp"))
+            .ok()
+            .and_then(|root| ManagedRoot::open(&root).ok())
+        else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                "backup configuration root is unavailable",
+            ));
+        };
+        let context = backup_deploy::recover::Context {
+            engine_state: &state,
+            config_root: &config_root,
+            crontab_program: "crontab",
+        };
+        match backup_deploy::recover::execute(
+            &context,
+            interrupted,
+            holder,
+            &CancellationToken::default(),
+        ) {
+            Ok(result) => Response::success(OP, result),
+            Err(error) => {
+                let (code, message) = error.protocol();
+                Ok(Response::failure(OP, code, message))
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (interrupted, holder);
+        Ok(Response::failure(
+            OP,
+            ErrorCode::UnsupportedPlatform,
+            "backup recovery requires a Linux host",
+        ))
+    }
+}
+
 fn discard_partial(
     database: Option<&str>,
     import: bool,
+    trigger: bool,
+    delete_scope: Option<&str>,
     interrupted_request_id: &str,
     request_id: &str,
 ) -> Result<Response, ResponseBuildError> {
@@ -411,6 +492,8 @@ fn discard_partial(
     let request = match backup_recover::Request::parse(
         database,
         import,
+        trigger,
+        delete_scope,
         interrupted_request_id,
         request_id,
     ) {
@@ -419,7 +502,7 @@ fn discard_partial(
             return Ok(Response::failure(
                 OP,
                 ErrorCode::InvalidInput,
-                "give exactly one of --database <name> or --import, and canonical request ids",
+                "give exactly one of --database <name>, --import, --trigger or --delete-scope <sha256>, and canonical request ids",
             ));
         }
     };

@@ -626,6 +626,8 @@ pub fn incomplete(
                                 Some("stack.recoverDeploy")
                             } else if crate::backup_recover::available(&record) {
                                 Some("backup.discardPartial")
+                            } else if crate::backup_deploy::recover::available(&dir, &record) {
+                                Some("backup.recoverConfig")
                             } else {
                                 None
                             },
@@ -734,6 +736,8 @@ fn recovery_action(
         Some("stack.recoverDeploy")
     } else if crate::backup_recover::available(record) {
         Some("backup.discardPartial")
+    } else if crate::backup_deploy::recover::available(scope, record) {
+        Some("backup.recoverConfig")
     } else if crate::db_restore::protected::available(scope, record) {
         Some("db.recoverRestore")
     } else if crate::site_create::available(scope, record) {

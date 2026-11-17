@@ -258,16 +258,31 @@ pub enum BackupCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Roll back a `backup.activateConfig` that died after it started changing
+    /// the live files: restore the previous files and root crontab from the
+    /// evidence it saved first. Never activates anything.
+    RecoverConfig {
+        #[arg(long = "interrupted-request-id")]
+        interrupted_request_id: String,
+        #[arg(long = "request-id")]
+        request_id: String,
+    },
     /// Close a database backup or remote import that died mid-write: remove
     /// that request's partial file and mark its transaction failed. Never
     /// starts a backup.
     DiscardPartial {
         /// The database of an interrupted `backup.createDatabase`.
-        #[arg(long = "database", conflicts_with = "import")]
+        #[arg(long = "database")]
         database: Option<String>,
         /// An interrupted `backup.importRemote` instead.
         #[arg(long = "import")]
         import: bool,
+        /// An interrupted `backup.triggerNow` instead.
+        #[arg(long = "trigger")]
+        trigger: bool,
+        /// An interrupted `backup.delete`, by its scope (SHA-256 of the path, 64 hex).
+        #[arg(long = "delete-scope")]
+        delete_scope: Option<String>,
         #[arg(long = "interrupted-request-id")]
         interrupted_request_id: String,
         #[arg(long = "request-id")]
@@ -330,6 +345,7 @@ impl BackupCommand {
             Self::ActivateConfig { .. } => "backup.activateConfig",
             Self::TriggerNow { .. } => "backup.triggerNow",
             Self::DiscardPartial { .. } => "backup.discardPartial",
+            Self::RecoverConfig { .. } => "backup.recoverConfig",
             Self::CreateDatabase { .. } => "backup.createDatabase",
             Self::ScheduleDatabase { .. } => "backup.scheduleDatabase",
             Self::UnscheduleDatabase { .. } => "backup.unscheduleDatabase",
