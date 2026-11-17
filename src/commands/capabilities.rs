@@ -254,6 +254,7 @@ pub const OPERATIONS: &[&str] = &[
     "system.deleteSwap",
     "system.resizeSwap",
     "stack.deploy",
+    "stack.recoverDeploy",
     "stack.reloadCaddy",
     "stack.stopIdleRuntime",
     "stack.ensureRuntime",

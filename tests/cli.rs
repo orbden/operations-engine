@@ -195,6 +195,7 @@ fn capabilities_describe_only_implemented_operations() {
             "system.deleteSwap",
             "system.resizeSwap",
             "stack.deploy",
+            "stack.recoverDeploy",
             "stack.reloadCaddy",
             "stack.stopIdleRuntime",
             "stack.ensureRuntime",

@@ -1488,6 +1488,28 @@ again while holding the lock. A recovered success includes `recovered: true`;
 its `activatedAtUnixSecs` is the time recovery verified the active release.
 Completed checkpoint files are pruned with their transaction records.
 
+## `stack.recoverDeploy`
+
+`stack recover-deploy --interrupted-request-id <uuid> --request-id <uuid>`
+rolls back a `stack.deploy` that died after it changed the live files. It is
+the rollback the next `stack.deploy` runs first, offered on its own: it takes
+the shared stack lock (a held lock is `CONFLICT`), requires the journal on the
+server to belong to `--interrupted-request-id` (another request's journal is
+`CONFLICT`), restores the previous files, brings them up and checks that the
+ingress publishes its ports. An interrupted first deploy takes its new
+containers down (never their volumes) and removes its new files. The
+interrupted transaction is marked `FAILED` (`CANCELLED`) and the journal is
+removed. It never deploys, pulls or validates anything and takes no secrets.
+
+The result is `{"recovered": true}`; with no journal left (already recovered,
+or never interrupted) it is `{"recovered": false}` and nothing runs. A rollback
+that cannot finish returns `CONFIG_RECOVERY_FAILED` and keeps the journal, so
+the call can be repeated.
+
+`operation.status` for a `stack.deploy` adds `recoveryAction:
+"stack.recoverDeploy"` only for an inactive `IN_PROGRESS` record whose journal
+is present and names that request.
+
 ## `site.create` and `site.recoverCreate`
 
 `site create --request-file <root-owned JSON> --request-id <uuid>
