@@ -55,6 +55,7 @@ use crate::{
 pub mod patch;
 
 pub const OPERATION: &str = "stack.deploy";
+pub const RECOVER_OPERATION: &str = "stack.recoverDeploy";
 
 /// Engine-state scope shared by every operation on the WCP stack.
 pub const SCOPE: &str = "stacks/wcp";
@@ -517,6 +518,11 @@ pub enum Error {
     PostCommit {
         result: Box<DeployResult>,
     },
+    /// Another stack operation holds the shared stack lock.
+    LockHeld,
+    /// The journal on the server belongs to a different request than the one
+    /// the caller asked to recover.
+    UnrelatedJournal,
 }
 
 impl NotUp {
@@ -568,6 +574,14 @@ fn docker_failure_code(failure: &DockerFailure) -> ErrorCode {
 impl Error {
     pub fn protocol(&self) -> (ErrorCode, String) {
         match self {
+            Self::LockHeld => (
+                ErrorCode::Conflict,
+                "another stack operation is in progress".into(),
+            ),
+            Self::UnrelatedJournal => (
+                ErrorCode::Conflict,
+                "the interrupted deploy on the server is a different request".into(),
+            ),
             Self::Preflight(preflight::Error::Lock(_)) => (
                 ErrorCode::Conflict,
                 "another stack operation is in progress".into(),
@@ -1302,6 +1316,57 @@ fn recover_interrupted(
     Ok(true)
 }
 
+/// Result of `stack.recoverDeploy`.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverResult {
+    /// False when no journal was left (already recovered, or never interrupted).
+    pub recovered: bool,
+}
+
+/// Explicit recovery of an interrupted `stack.deploy`: the same rollback the
+/// next deploy would run first, without deploying anything. It never retries
+/// the deploy; it restores the previous files and brings them up (or, for an
+/// interrupted first deploy, takes the new containers down without their
+/// volumes), then marks the interrupted transaction failed.
+pub fn recover(
+    ctx: &Context<'_>,
+    interrupted: RequestId,
+    holder: RequestId,
+    cancel: &CancellationToken,
+) -> Result<RecoverResult, Error> {
+    let scope = open_scope(ctx.engine_state).map_err(Error::Io)?;
+    let _lock = acquire_stack_lock(&scope, holder).map_err(|_| Error::LockHeld)?;
+    let Some(bytes) = read_optional(&scope, &rel(JOURNAL)).map_err(Error::Io)? else {
+        return Ok(RecoverResult { recovered: false });
+    };
+    let journal: Journal = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+    if journal.request_id != interrupted {
+        return Err(Error::UnrelatedJournal);
+    }
+    let root = ManagedRoot::open(ctx.stack_root).map_err(Error::Io)?;
+    let docker = Docker {
+        program: ctx.docker,
+        cwd: ctx.stack_root.as_path(),
+        cancel,
+    };
+    recover_interrupted(ctx, &scope, &root, &docker)?;
+    Ok(RecoverResult { recovered: true })
+}
+
+/// Whether `record` is a `stack.deploy` that died after writing its journal,
+/// so `stack.recoverDeploy` can roll it back.
+pub fn available(scope: &ManagedRoot, record: &state::TransactionState) -> bool {
+    record.status == TransactionStatus::InProgress
+        && record.operation == OPERATION
+        && read_optional(scope, &rel(JOURNAL))
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<Journal>(&bytes).ok())
+            .is_some_and(|journal| journal.request_id == record.request_id)
+}
+
 fn replay(scope: &ManagedRoot, id: RequestId) -> Result<DeployResult, Error> {
     let loaded = state::load(scope, &rel(format!("transactions/{id}.json")))
         .map_err(|error| Error::Io(io::Error::other(format!("{error:?}"))))?;
@@ -1464,6 +1529,32 @@ exit 2
             }
             names.sort();
             names
+        }
+
+        fn recover(&self, interrupted: RequestId, holder: &str) -> Result<RecoverResult, Error> {
+            let state =
+                ManagedRoot::open(&TrustedRoot::parse(self.path("state")).unwrap()).unwrap();
+            let stack = TrustedRoot::parse(self.path("stack")).unwrap();
+            let docker = self.path("docker");
+            let ctx = Context {
+                engine_state: &state,
+                stack_root: &stack,
+                docker: docker.to_str().unwrap(),
+                timing: Timing {
+                    validate: Duration::from_secs(10),
+                    pull: Duration::from_secs(10),
+                    up: Duration::from_secs(10),
+                    health: Duration::from_millis(300),
+                    poll_interval: Duration::from_millis(20),
+                },
+                owner: Some(current_owner()),
+            };
+            recover(
+                &ctx,
+                interrupted,
+                RequestId::parse(holder).unwrap(),
+                &CancellationToken::default(),
+            )
         }
 
         fn run(&self, id: &str, key: Option<&str>, compose: &str) -> Result<DeployResult, Error> {
@@ -1765,6 +1856,98 @@ exit 2
         let old = state::load(&scope, &rel(format!("transactions/{interrupted}.json"))).unwrap();
         assert_eq!(old.status, TransactionStatus::Failed);
         assert!(!fx.path("state/stacks/wcp/journal.json").exists());
+    }
+
+    /// Leaves what a deploy that died after swapping only the compose file
+    /// leaves: an in-progress transaction, the journal and a half-written file.
+    fn interrupt(fx: &Fixture, interrupted: RequestId) -> ManagedRoot {
+        let state = ManagedRoot::open(&TrustedRoot::parse(fx.path("state")).unwrap()).unwrap();
+        let scope = open_scope(&state).unwrap();
+        state::create(
+            &scope,
+            &rel(format!("transactions/{interrupted}.json")),
+            &TransactionState::start(interrupted, None, OPERATION),
+        )
+        .unwrap();
+        scope
+            .write_atomic(
+                &rel(JOURNAL),
+                &serde_json::to_vec(&Journal {
+                    request_id: interrupted,
+                    existed: vec![true; FILES.len()],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        fs::copy(
+            fx.path("stack/stack/docker-compose.yml"),
+            fx.path(&format!(
+                "stack/stack/docker-compose.yml.rollback-{interrupted}"
+            )),
+        )
+        .unwrap();
+        fs::write(
+            fx.path("stack/stack/docker-compose.yml"),
+            "services: half\n",
+        )
+        .unwrap();
+        scope
+    }
+
+    #[test]
+    fn explicit_recovery_restores_the_previous_files_and_deploys_nothing() {
+        let fx = Fixture::new();
+        fx.run(ID, None, "services: old\n").unwrap();
+        let interrupted = RequestId::parse(ID_2).unwrap();
+        let scope = interrupt(&fx, interrupted);
+        let record = state::load(&scope, &rel(format!("transactions/{interrupted}.json"))).unwrap();
+        assert!(available(&scope, &record));
+
+        fx.reset_calls();
+        let result = fx.recover(interrupted, ID_3).unwrap();
+        assert_eq!(result, RecoverResult { recovered: true });
+        assert_eq!(fx.live(COMPOSE_FILE).as_deref(), Some("services: old\n"));
+        assert!(fx.calls().contains("up -d [.env] services: old"));
+        assert!(!fx.calls().contains("pull"));
+        assert_eq!(fx.stack_entries(), managed_files());
+        let old = state::load(&scope, &rel(format!("transactions/{interrupted}.json"))).unwrap();
+        assert_eq!(old.status, TransactionStatus::Failed);
+        assert!(!available(&scope, &old));
+        assert!(!fx.path("state/stacks/wcp/journal.json").exists());
+
+        // Nothing is left to recover the second time.
+        fx.reset_calls();
+        assert_eq!(
+            fx.recover(interrupted, ID_3).unwrap(),
+            RecoverResult { recovered: false }
+        );
+        assert!(fx.calls().is_empty());
+    }
+
+    #[test]
+    fn explicit_recovery_refuses_another_requests_journal_and_a_held_lock() {
+        let fx = Fixture::new();
+        fx.run(ID, None, "services: old\n").unwrap();
+        let interrupted = RequestId::parse(ID_2).unwrap();
+        let scope = interrupt(&fx, interrupted);
+
+        fx.reset_calls();
+        let error = fx
+            .recover(RequestId::parse(ID_3).unwrap(), ID_3)
+            .unwrap_err();
+        assert!(matches!(error, Error::UnrelatedJournal));
+        assert_eq!(fx.live(COMPOSE_FILE).as_deref(), Some("services: half\n"));
+
+        let _held = crate::transaction::lock::acquire(
+            &scope,
+            &rel("locks/mutation.lock"),
+            RequestId::parse(ID_3).unwrap(),
+        )
+        .unwrap();
+        let error = fx.recover(interrupted, ID).unwrap_err();
+        assert_eq!(error.protocol().0, ErrorCode::Conflict);
+        assert!(fx.calls().is_empty());
+        assert_eq!(fx.live(COMPOSE_FILE).as_deref(), Some("services: half\n"));
     }
 
     #[test]

@@ -19,6 +19,10 @@ pub fn run(command: StackCommand) -> Result<Response, ResponseBuildError> {
             request_id,
             idempotency_key,
         } => deploy(&request_file, &request_id, idempotency_key.as_deref()),
+        StackCommand::RecoverDeploy {
+            interrupted_request_id,
+            request_id,
+        } => recover_deploy(&interrupted_request_id, &request_id),
         StackCommand::ReloadCaddy {
             service,
             request_id,
@@ -589,6 +593,86 @@ where
         operation,
         ErrorCode::UnsupportedPlatform,
         "stack service operations require a Unix host",
+    ))
+}
+
+#[cfg(unix)]
+fn recover_deploy(
+    interrupted_request_id: &str,
+    request_id: &str,
+) -> Result<Response, ResponseBuildError> {
+    use crate::{
+        config::EngineConfig,
+        filesystem::ManagedRoot,
+        process::CancellationToken,
+        stack_deploy::{self, Context, Timing},
+        transaction::RequestId,
+    };
+
+    const RECOVER: &str = stack_deploy::RECOVER_OPERATION;
+    let (Ok(interrupted), Ok(holder)) = (
+        RequestId::parse(interrupted_request_id),
+        RequestId::parse(request_id),
+    ) else {
+        return Ok(Response::failure(
+            RECOVER,
+            ErrorCode::InvalidInput,
+            "request ids must be canonical UUIDs",
+        ));
+    };
+    if !cfg!(target_os = "linux") {
+        return Ok(Response::failure(
+            RECOVER,
+            ErrorCode::UnsupportedPlatform,
+            "stack recovery requires a Linux host",
+        ));
+    }
+    let Ok(config) = EngineConfig::load_root_owned(std::path::Path::new(CONFIG_PATH)) else {
+        return Ok(Response::failure(
+            RECOVER,
+            ErrorCode::Internal,
+            crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+        ));
+    };
+    let Ok(engine_state) = ManagedRoot::open(&config.state_root) else {
+        return Ok(Response::failure(
+            RECOVER,
+            ErrorCode::Internal,
+            "engine state root is unavailable",
+        ));
+    };
+    let Some((stack_root, owner)) = prepare_stack_root() else {
+        return Ok(Response::failure(
+            RECOVER,
+            ErrorCode::Internal,
+            "stack directory is unavailable",
+        ));
+    };
+    let context = Context {
+        engine_state: &engine_state,
+        stack_root: &stack_root,
+        docker: "docker",
+        timing: Timing::PRODUCTION,
+        owner,
+    };
+    match stack_deploy::recover(&context, interrupted, holder, &CancellationToken::default()) {
+        Ok(result) => Response::success(RECOVER, result),
+        Err(error) => {
+            let (code, message) = error.protocol();
+            Ok(Response::failure(RECOVER, code, &message))
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn recover_deploy(
+    _interrupted_request_id: &str,
+    _request_id: &str,
+) -> Result<Response, ResponseBuildError> {
+    Ok(Response::failure(
+        crate::stack_deploy::RECOVER_OPERATION,
+        ErrorCode::UnsupportedPlatform,
+        "stack recovery requires a Linux host",
     ))
 }
 

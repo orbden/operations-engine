@@ -125,6 +125,16 @@ pub enum StackCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Roll back a `stack.deploy` that was interrupted after it changed the
+    /// live files: restore the previous files and containers (or take down an
+    /// interrupted first deploy, keeping volumes). Never deploys anything.
+    RecoverDeploy {
+        /// The `--request-id` of the interrupted `stack.deploy`.
+        #[arg(long = "interrupted-request-id")]
+        interrupted_request_id: String,
+        #[arg(long = "request-id")]
+        request_id: String,
+    },
     /// Reload Caddy inside one service of the managed WCP stack (the
     /// ingress or one runtime pool) through a fixed argv, under the shared
     /// stack lock.
@@ -289,6 +299,7 @@ impl StackCommand {
     pub const fn operation(&self) -> &'static str {
         match self {
             Self::Deploy { .. } => "stack.deploy",
+            Self::RecoverDeploy { .. } => "stack.recoverDeploy",
             Self::ReloadCaddy { .. } => "stack.reloadCaddy",
             Self::StopIdleRuntime { .. } => "stack.stopIdleRuntime",
             Self::EnsureRuntime { .. } => "stack.ensureRuntime",
