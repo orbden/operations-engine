@@ -1515,6 +1515,28 @@ record. With the `failpoints` feature and `WCP_FAILPOINT=stack.afterActivate`
 the engine kills itself right after the files are swapped, which is how the
 workflow tests produce this state.
 
+## `backup.discardPartial`
+
+`backup discard-partial (--database <name> | --import) --interrupted-request-id
+<uuid> --request-id <uuid>` closes a `backup.createDatabase` (`--database`) or
+`backup.importRemote` (`--import`) that died mid-write. Neither can be resumed:
+each streams into a file named after its own request id
+(`<database>_<time>.sql.partial-<id>` in `/root/db-backups`,
+`<id>_<name>.partial` in the imports directory) and publishes it by a final
+rename. The command takes the scope's lock (held by a live original: `CONFLICT`),
+requires the named transaction to be an `IN_PROGRESS` backup of that kind
+(`CONFLICT` for another operation, `NOT_FOUND` for none), removes only that
+request's plain partial file(s) (never a symlink, another request's file or a
+finished backup) and marks the transaction `FAILED` (`CANCELLED`). It never
+starts a backup. The result is `{"closed": true, "filesRemoved": 1}`; for a
+transaction that is no longer in progress it is `{"closed": false,
+"filesRemoved": 0}` and nothing is touched.
+
+`operation.status` (database scope) and `operation.incomplete` name
+`backup.discardPartial` for such records. With the `failpoints` feature,
+`WCP_FAILPOINT=backup.afterPartialCreate` kills `backup.createDatabase` right
+after the partial file is created.
+
 ## `site.create` and `site.recoverCreate`
 
 `site create --request-file <root-owned JSON> --request-id <uuid>

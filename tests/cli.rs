@@ -48,6 +48,7 @@ fn capabilities_describe_only_implemented_operations() {
             "operation.list",
             "operation.incomplete",
             "backup.delete",
+            "backup.discardPartial",
             "backup.importRemote",
             "backup.installRclone",
             "backup.createDatabase",

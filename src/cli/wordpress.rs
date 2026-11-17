@@ -258,6 +258,21 @@ pub enum BackupCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Close a database backup or remote import that died mid-write: remove
+    /// that request's partial file and mark its transaction failed. Never
+    /// starts a backup.
+    DiscardPartial {
+        /// The database of an interrupted `backup.createDatabase`.
+        #[arg(long = "database", conflicts_with = "import")]
+        database: Option<String>,
+        /// An interrupted `backup.importRemote` instead.
+        #[arg(long = "import")]
+        import: bool,
+        #[arg(long = "interrupted-request-id")]
+        interrupted_request_id: String,
+        #[arg(long = "request-id")]
+        request_id: String,
+    },
     /// Stream a database dump into the managed backup root.
     CreateDatabase {
         #[arg(long = "request-file")]
@@ -314,6 +329,7 @@ impl BackupCommand {
             Self::ImportRemote { .. } => "backup.importRemote",
             Self::ActivateConfig { .. } => "backup.activateConfig",
             Self::TriggerNow { .. } => "backup.triggerNow",
+            Self::DiscardPartial { .. } => "backup.discardPartial",
             Self::CreateDatabase { .. } => "backup.createDatabase",
             Self::ScheduleDatabase { .. } => "backup.scheduleDatabase",
             Self::UnscheduleDatabase { .. } => "backup.unscheduleDatabase",

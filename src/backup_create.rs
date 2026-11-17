@@ -283,6 +283,9 @@ pub fn execute(
     let file = backup_root
         .create_new_file(&temp_path)
         .map_err(ExecuteError::Io)?;
+    // The partial dump exists and the transaction is in progress: a crash here
+    // is what `backup.discardPartial` closes.
+    crate::failpoint::hit("backup.afterPartialCreate");
     // The password is only in this process's environment, forwarded to the
     // container by name, never in argv.
     let password_env = match request.db_type {

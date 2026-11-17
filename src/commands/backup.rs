@@ -4,7 +4,7 @@ use crate::{
         BACKUP_ROOT, OPERATION, Request, RequestError,
         execute::{Context, Error, execute},
     },
-    backup_deploy, backup_import_remote, backup_schedule, backup_trigger,
+    backup_deploy, backup_import_remote, backup_recover, backup_schedule, backup_trigger,
     cli::BackupCommand,
     commands::read_root_owned_content_file,
     error::ErrorCode,
@@ -34,6 +34,17 @@ pub fn run(command: BackupCommand) -> Result<Response, ResponseBuildError> {
             request_id,
             idempotency_key,
         } => trigger_now(&request_id, idempotency_key.as_deref()),
+        BackupCommand::DiscardPartial {
+            database,
+            import,
+            interrupted_request_id,
+            request_id,
+        } => discard_partial(
+            database.as_deref(),
+            import,
+            &interrupted_request_id,
+            &request_id,
+        ),
         BackupCommand::CreateDatabase {
             request_file,
             request_id,
@@ -386,6 +397,79 @@ fn activate_config(
             backup_deploy::OPERATION,
             ErrorCode::UnsupportedPlatform,
             "backup.activateConfig requires a Unix host",
+        ))
+    }
+}
+
+fn discard_partial(
+    database: Option<&str>,
+    import: bool,
+    interrupted_request_id: &str,
+    request_id: &str,
+) -> Result<Response, ResponseBuildError> {
+    const OP: &str = backup_recover::OPERATION;
+    let request = match backup_recover::Request::parse(
+        database,
+        import,
+        interrupted_request_id,
+        request_id,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::InvalidInput,
+                "give exactly one of --database <name> or --import, and canonical request ids",
+            ));
+        }
+    };
+    #[cfg(unix)]
+    {
+        use crate::{config::EngineConfig, filesystem::ManagedRoot, site::TrustedRoot};
+        let Ok(config) = EngineConfig::load_root_owned(std::path::Path::new(CONFIG_PATH)) else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+            ));
+        };
+        let Ok(state) = ManagedRoot::open(&config.state_root) else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                "engine state root is unavailable",
+            ));
+        };
+        let Some(backup_root) = TrustedRoot::parse(std::path::Path::new(BACKUP_ROOT))
+            .ok()
+            .and_then(|root| ManagedRoot::open(&root).ok())
+        else {
+            return Ok(Response::failure(
+                OP,
+                ErrorCode::Internal,
+                "backup root is unavailable",
+            ));
+        };
+        let context = backup_recover::Context {
+            engine_state: &state,
+            backup_root: &backup_root,
+            import_root: std::path::Path::new(backup_import_remote::IMPORT_ROOT),
+        };
+        match backup_recover::execute(&context, &request) {
+            Ok(result) => Response::success(OP, result),
+            Err(error) => {
+                let (code, message) = error.protocol();
+                Ok(Response::failure(OP, code, message))
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        Ok(Response::failure(
+            OP,
+            ErrorCode::UnsupportedPlatform,
+            "backup recovery requires a Linux host",
         ))
     }
 }
