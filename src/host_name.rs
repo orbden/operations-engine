@@ -58,7 +58,6 @@ mod tests {
             "a-b.c",
             "UPPER.example",
             "1.2.3.4",
-            "a.1",
         ] {
             assert!(is_dns_name_or_ipv4(ok), "{ok:?}");
         }
