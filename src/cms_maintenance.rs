@@ -376,19 +376,7 @@ fn laravel_down(
 
 /// 32 alphanumeric characters from the kernel's random source.
 fn new_secret() -> Result<String, Error> {
-    use std::io::Read;
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut urandom = std::fs::File::open("/dev/urandom").map_err(|_| Error::Entropy)?;
-    let mut out = String::with_capacity(SECRET_LEN);
-    let mut byte = [0u8; 1];
-    while out.len() < SECRET_LEN {
-        urandom.read_exact(&mut byte).map_err(|_| Error::Entropy)?;
-        // 248 = 62 * 4: rejecting the rest keeps every character equally likely.
-        if byte[0] < 248 {
-            out.push(ALPHABET[usize::from(byte[0]) % ALPHABET.len()] as char);
-        }
-    }
-    Ok(out)
+    crate::util::random_alnum(SECRET_LEN).map_err(|_| Error::Entropy)
 }
 
 /// What one run produced: the read-back mode, whether anything changed and
@@ -615,6 +603,15 @@ fn fail(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_is_32_alphanumeric_characters_and_not_repeated() {
+        let a = new_secret().unwrap();
+        let b = new_secret().unwrap();
+        assert_eq!(a.len(), SECRET_LEN);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(a, b);
+    }
     use std::{fs, os::unix::fs::PermissionsExt};
 
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
