@@ -160,6 +160,19 @@ mod tests {
     const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     #[test]
+    fn charset_ok_checks_length_first_byte_and_the_rest() {
+        let digit = |b: u8| b.is_ascii_digit();
+        let alpha = |b: u8| b.is_ascii_alphabetic();
+        assert!(!charset_ok("", 4, digit, alpha));
+        assert!(charset_ok("1abc", 4, digit, alpha));
+        assert!(!charset_ok("1abcd", 4, digit, alpha));
+        assert!(!charset_ok("a1bc", 4, digit, alpha));
+        assert!(!charset_ok("1ab1", 4, digit, alpha));
+        assert!(charset_ok("1", 4, digit, alpha));
+        assert!(!charset_ok("1\u{e9}", 4, digit, alpha));
+    }
+
+    #[test]
     fn hex_is_lowercase_two_digits_per_byte() {
         assert_eq!(hex(&[]), "");
         assert_eq!(hex(&[0x00]), "00");
