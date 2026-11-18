@@ -2,7 +2,7 @@
 //! verify its declared SHA-256 before publishing it. The caller verifies the
 //! snapshot manifest and supplies the digest; this operation owns the mutation.
 
-use crate::util::hex;
+use crate::util::sha256_reader;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -16,8 +16,7 @@ use crate::{
     },
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::{fs, path::Path, time::Duration};
 
 pub const OPERATION: &str = "backup.importRemote";
 pub const IMPORT_ROOT: &str = "/root/db-backups/imports";
@@ -282,17 +281,8 @@ fn download(
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&partial, fs::Permissions::from_mode(0o600)).map_err(Error::Io)?;
         }
-        let mut file = fs::File::open(&partial).map_err(Error::Io)?;
-        let mut hasher = Sha256::new();
-        let mut chunk = [0u8; 64 * 1024];
-        loop {
-            let count = file.read(&mut chunk).map_err(Error::Io)?;
-            if count == 0 {
-                break;
-            }
-            hasher.update(&chunk[..count]);
-        }
-        let actual = hex(&hasher.finalize());
+        let file = fs::File::open(&partial).map_err(Error::Io)?;
+        let (_, actual) = sha256_reader(file).map_err(Error::Io)?;
         if actual != req.digest {
             return Err(Error::DigestMismatch);
         }

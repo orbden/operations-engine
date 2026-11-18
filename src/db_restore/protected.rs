@@ -1,7 +1,7 @@
 //! Offline, single-database restore with a private durable rollback snapshot.
 //! The existing raw import helper remains available to enclosing CMS transactions.
 use super::execute::{RestoreContext, open_restore_state};
-use crate::util::hex;
+use crate::util::sha256_reader;
 use crate::{
     db_restore::{DbType, RestoreRequest, RestoreResult},
     error::ErrorCode,
@@ -18,7 +18,6 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read},
@@ -379,17 +378,8 @@ fn run_client(
     cleanup_client(c, r, r.request_id, rollback);
     Ok(exit_code == 0)
 }
-fn digest(mut f: File) -> Result<String, Error> {
-    let mut hash = Sha256::new();
-    let mut buf = [0; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-    }
-    Ok(hex(&hash.finalize()))
+fn digest(f: File) -> Result<String, Error> {
+    Ok(sha256_reader(f)?.1)
 }
 fn container_id(c: &RestoreContext<'_>, r: &RestoreRequest) -> Result<String, Error> {
     let out = process::run(

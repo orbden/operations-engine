@@ -1,11 +1,10 @@
 //! Immutable database/snapshot evidence for explicit content recovery.
-use crate::util::hex;
+use crate::util::sha256_reader;
 use crate::{
     filesystem::ManagedRoot,
     process::{self, CancellationToken, ProcessLimits, ProcessRequest, ProcessTermination},
     site::SiteRelativePath,
 };
-use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read},
@@ -32,17 +31,8 @@ pub fn container_id(docker: &str, name: &str) -> io::Result<String> {
     }
     Ok(id)
 }
-pub fn digest(mut file: File) -> io::Result<String> {
-    let mut hash = Sha256::new();
-    let mut buffer = [0; 65536];
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buffer[..n]);
-    }
-    Ok(hex(&hash.finalize()))
+pub fn digest(file: File) -> io::Result<String> {
+    Ok(sha256_reader(file)?.1)
 }
 pub fn record(
     scope: &ManagedRoot,

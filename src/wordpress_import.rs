@@ -2,7 +2,7 @@
 //! verifies its size and digest, then runs only fixed Docker/WP-CLI argv.
 //! Import changes WordPress data and has no automatic rollback.
 
-use crate::util::hex;
+use crate::util::sha256_reader;
 use crate::{
     db_restore::ContainerName,
     error::ErrorCode,
@@ -21,7 +21,6 @@ use crate::{
     },
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::Read,
@@ -192,21 +191,11 @@ fn verify_artifact(ctx: &Context<'_>, req: &Request) -> Result<PathBuf, Error> {
     if meta.uid() != ctx.artifact_owner_uid || meta.nlink() != 1 || meta.mode() & 0o777 != 0o600 {
         return Err(Error::InvalidArtifact);
     }
-    let mut digest = Sha256::new();
-    let mut total = 0_u64;
-    let mut buf = [0_u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buf).map_err(|_| Error::InvalidArtifact)?;
-        if n == 0 {
-            break;
-        }
-        total += n as u64;
-        if total > MAX_ARTIFACT_BYTES {
-            return Err(Error::InvalidArtifact);
-        }
-        digest.update(&buf[..n]);
+    let (total, computed) = sha256_reader((&mut file).take(MAX_ARTIFACT_BYTES + 1))
+        .map_err(|_| Error::InvalidArtifact)?;
+    if total > MAX_ARTIFACT_BYTES {
+        return Err(Error::InvalidArtifact);
     }
-    let computed = hex(&digest.finalize());
     if total != req.byte_length || computed != req.sha256 {
         return Err(Error::InvalidArtifact);
     }
