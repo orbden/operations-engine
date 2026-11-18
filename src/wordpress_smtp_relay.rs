@@ -568,6 +568,97 @@ exit 0
     }
 
     #[test]
+    fn valid_host_pins_the_relay_host_grammar() {
+        // Deliberately looser than the agent manifest's host check: a relay
+        // host may be an IPv6 literal (`::1`, `[::1]`), so `:`, `[` and `]`
+        // are allowed, and there is no rule about the first and last
+        // character. Whitespace, quotes, `;`, `/`, `\`, NUL and anything
+        // non-ASCII are refused.
+        for accepted in [
+            "smtp.example.com",
+            "a",
+            "1.2.3.4",
+            "[::1]",
+            "::1",
+            "2001:db8::1",
+            "[2001:db8::1]",
+            "fe80::1",
+            "-",
+            ".",
+            ":",
+            "[",
+            "]",
+            "a..b",
+            "-a-",
+            "a:587",
+        ] {
+            assert!(valid_host(accepted), "{accepted:?}");
+        }
+        assert!(valid_host(&"a".repeat(253)));
+        assert!(!valid_host(&"a".repeat(254)));
+        for rejected in [
+            "",
+            " ",
+            "a b",
+            " a",
+            "a ",
+            "a\n",
+            "\na",
+            "a\0",
+            "a/b",
+            "a\\b",
+            "a;b",
+            "a'b",
+            "a\"b",
+            "a_b",
+            "a,b",
+            "a@b",
+            "a%b",
+            "a$b",
+            "a`b",
+            "a(b",
+            "a|b",
+            "a&b",
+            "a#b",
+            "\u{e9}",
+            "a\u{e9}",
+            "\u{ff21}",
+            "a\u{200b}",
+            "https://a",
+            "a/../b",
+        ] {
+            assert!(!valid_host(rejected), "{rejected:?}");
+        }
+        for c in (0u8..=127).map(char::from) {
+            let expected = c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']');
+            for probe in [
+                format!("a{c}a"),
+                format!("{c}a"),
+                format!("a{c}"),
+                c.to_string(),
+            ] {
+                assert_eq!(valid_host(&probe), expected, "{probe:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_host_is_trimmed_before_it_is_checked() {
+        // Outer whitespace is stripped by `Request::parse`; inner whitespace
+        // is rejected by `valid_host` itself.
+        let root = "/srv/site";
+        let with_host = |host: &str| {
+            let mut value: serde_json::Value = serde_json::from_str(&plan_json(root, &[])).unwrap();
+            value["host"] = serde_json::json!(host);
+            value.to_string()
+        };
+        assert!(Request::parse(&with_host("  smtp.example.com\n"), ID, None).is_ok());
+        assert!(Request::parse(&with_host("[::1]"), ID, None).is_ok());
+        assert!(Request::parse(&with_host("smtp. example.com"), ID, None).is_err());
+        assert!(Request::parse(&with_host("   "), ID, None).is_err());
+    }
+
+    #[test]
     fn parses_a_well_formed_plan_and_rejects_invalid_fields() {
         assert!(Request::parse(&plan_json("/srv/site", &[]), ID, None).is_ok());
         for (key, value) in [
