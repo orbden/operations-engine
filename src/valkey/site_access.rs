@@ -253,19 +253,7 @@ impl Error {
 
 /// 32 alphanumeric characters from the kernel's random source.
 fn new_password() -> Result<String, Error> {
-    use std::io::Read;
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut urandom = std::fs::File::open("/dev/urandom").map_err(|_| Error::Entropy)?;
-    let mut out = String::with_capacity(PASSWORD_LEN);
-    let mut byte = [0u8; 1];
-    while out.len() < PASSWORD_LEN {
-        urandom.read_exact(&mut byte).map_err(|_| Error::Entropy)?;
-        // 248 = 62 * 4: rejecting the rest keeps every character equally likely.
-        if byte[0] < 248 {
-            out.push(ALPHABET[usize::from(byte[0]) % ALPHABET.len()] as char);
-        }
-    }
-    Ok(out)
+    crate::util::random_alnum(PASSWORD_LEN).map_err(|_| Error::Entropy)
 }
 
 /// The ACL rules of a site user, as separate arguments. Only the hash of the
