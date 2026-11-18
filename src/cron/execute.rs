@@ -361,6 +361,7 @@ fn audit_log_path() -> SiteRelativePath {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::test_support::shell_quote;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::{InstallTabContext, execute};
@@ -423,10 +424,6 @@ mod tests {
                 .to_owned(),
             installed_tab,
         }
-    }
-
-    fn shell_quote(path: &std::path::Path) -> String {
-        format!("'{}'", path.to_str().expect("path should be utf8"))
     }
 
     fn context(host: &Host) -> InstallTabContext<'_> {
