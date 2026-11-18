@@ -279,7 +279,7 @@ fn postgres_minor_releases_are_patches_of_the_major_line() {
 #[test]
 fn parse_version_table() {
     // The Debian/apt-style grammar: optional numeric epoch, optional `v`,
-    // two to four dot-separated numbers, anything after them ignored. It is
+    // two to four dot-separated numbers, then only an apt revision (`+x`, `-1`). It is
     // not semver and stays separate from the strict `x.y.z` checks elsewhere.
     for (raw, expected) in [
         ("1:11.4.5+maria~ubu2404", Some(vec![11, 4, 5])),
@@ -290,10 +290,13 @@ fn parse_version_table() {
         (" 18.1 ", Some(vec![18, 1])),
         ("18.1\n", Some(vec![18, 1])),
         ("18.1.", Some(vec![18, 1])),
-        ("18.1rc1", Some(vec![18, 1])),
-        ("18.1-beta", Some(vec![18, 1])),
+        ("18.1rc1", None),
+        ("18.1-beta", None),
+        ("18.1-2", Some(vec![18, 1])),
+        ("18.1~rc1", None),
         ("18.1+x", Some(vec![18, 1])),
-        ("18.1~x", Some(vec![18, 1])),
+        ("18.1~x", None),
+        ("18.1+x~y", Some(vec![18, 1])),
         ("01.02", Some(vec![1, 2])),
         ("0.0", Some(vec![0, 0])),
         ("4294967295.1", Some(vec![4_294_967_295, 1])),
@@ -320,8 +323,30 @@ fn parse_version_table() {
         ("\u{ff11}.2", None),
         ("1.\u{663}", None),
         ("\0", None),
-        ("1.2\0", Some(vec![1, 2])),
+        ("1.2\0", None),
+        ("1.2+a\0", None),
+        ("1.2+a b", None),
     ] {
         assert_eq!(parse_version(raw), expected, "{raw:?}");
     }
+}
+
+#[test]
+fn prerelease_versions_are_unknown_not_a_patch() {
+    const PG: &str = "ghcr.io/orbden/postgres:18@sha256:aaaa";
+    // A pre-release candidate used to parse as the release and offer a patch.
+    let f = facts(&['b'], Some(("PG_VERSION", "18.1")), None);
+    let row = one(PG, f, Some(cand(Some('c'), Some("18.2rc1"))));
+    assert_eq!(
+        (row.status, row.reason),
+        (Status::Unknown, "candidateVersionUnknown")
+    );
+    // A pre-release running version is not shown as the release either.
+    let f = facts(&['b'], Some(("PG_VERSION", "18.1rc1")), None);
+    let row = one(PG, f, Some(cand(Some('c'), Some("18.2"))));
+    assert_eq!(row.running_version, None);
+    assert_eq!(
+        (row.status, row.reason),
+        (Status::Unknown, "runningVersionUnknown")
+    );
 }
