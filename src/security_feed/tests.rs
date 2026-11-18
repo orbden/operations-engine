@@ -100,6 +100,28 @@ fn enabled() -> (tempfile::TempDir, ManagedRoot) {
 }
 
 #[test]
+fn utc_times_parse_across_a_table_of_dates() {
+    for (year, month, day, days) in [
+        (1970, 1, 1, 0),
+        (1969, 12, 31, -1),
+        (2000, 2, 29, 11016),
+        (1999, 12, 31, 10956),
+        (2100, 2, 28, 47540),
+        (2100, 3, 1, 47541),
+        (2038, 1, 19, 24855),
+        (2024, 2, 29, 19782),
+        (1900, 3, 1, -25508),
+        (2026, 11, 18, 20775),
+        (1600, 1, 1, -135140),
+    ] {
+        let text = format!("{year:04}-{month:02}-{day:02}T00:00:00Z");
+        assert_eq!(parse_utc(&text), Some(days * 86_400), "{text}");
+        let text = format!("{year:04}-{month:02}-{day:02}T23:59:59Z");
+        assert_eq!(parse_utc(&text), Some(days * 86_400 + 86_399), "{text}");
+    }
+}
+
+#[test]
 fn utc_times_parse_exactly() {
     assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
     assert_eq!(parse_utc("2026-11-09T12:00:00Z"), Some(NOW));
