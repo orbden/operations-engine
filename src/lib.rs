@@ -135,6 +135,8 @@ pub mod system_updates_check;
 #[cfg(unix)]
 pub mod system_updates_status;
 pub mod tar_extract;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod tool_manage;
 pub mod transaction;
 pub mod update_db;
