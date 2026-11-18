@@ -160,6 +160,46 @@ mod tests {
     }
 
     #[test]
+    fn the_reported_version_is_any_non_empty_text_of_a_successful_version_envelope() {
+        let envelope = |version: &str| {
+            serde_json::json!({"operation": "version", "ok": true, "result": {"engineVersion": version}})
+                .to_string()
+        };
+        for version in [
+            "0.5.0",
+            "1.2.3-rc.1+build",
+            "x y",
+            " ",
+            "\n",
+            "not-a-version",
+            "é",
+        ] {
+            assert_eq!(
+                parse_reported_version(envelope(version).as_bytes()),
+                Some(version.to_owned()),
+                "{version:?}"
+            );
+        }
+        assert_eq!(parse_reported_version(envelope("").as_bytes()), None);
+        assert_eq!(
+            parse_reported_version(
+                br#"{"operation":"version","ok":true,"result":{"engineVersion":5}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            parse_reported_version(br#"{"operation":"version","ok":true,"result":{}}"#),
+            None
+        );
+        assert_eq!(
+            parse_reported_version(
+                br#"{"operation":"Version","ok":true,"result":{"engineVersion":"1"}}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_output_that_is_not_a_successful_version_envelope() {
         assert_eq!(parse_reported_version(b"0.5.0"), None);
         assert_eq!(parse_reported_version(b""), None);

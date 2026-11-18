@@ -1255,6 +1255,72 @@ mod tests {
     }
 
     #[test]
+    fn plain_version_and_major_tables() {
+        let long_suffix = |n: usize| format!("5.2.3-{}", "a".repeat(n));
+        for accepted in [
+            "5.2",
+            "5.2.3",
+            "5.2.3.4",
+            "5.3.0-rc1",
+            "5.3.0-",
+            "5.2-a-b",
+            "5.2.3-rc.1",
+            "5.2.3-RC-1",
+            "12345.12345.12345.12345",
+            "0.0",
+            "007.01",
+            long_suffix(18).as_str(),
+        ] {
+            assert!(plain_version(accepted), "{accepted:?}");
+        }
+        for rejected in [
+            "",
+            "5",
+            "5.",
+            ".5",
+            "5..3",
+            "5.2.",
+            "5.2.3.4.5",
+            "123456.1",
+            "5.x.1",
+            "5.2.3; ls",
+            "../5.2.3",
+            " 5.2",
+            "5.2 ",
+            "5.2\n",
+            "5.2\0",
+            "5.2_3",
+            "-5.2",
+            "+5.2",
+            "5.2-\u{e9}",
+            "\u{ff15}.2",
+            "5.2.3-rc/1",
+            "5.2.3-rc 1",
+            "5.2.3-rc'1",
+            long_suffix(19).as_str(),
+        ] {
+            assert!(!plain_version(rejected), "{rejected:?}");
+        }
+        for (version, expected) in [
+            ("5.4.10", Some(5)),
+            ("5", Some(5)),
+            ("5.x", Some(5)),
+            ("0.1", Some(0)),
+            ("007.1", Some(7)),
+            ("4294967295.0", Some(4_294_967_295)),
+            ("4294967296.0", None),
+            ("+5.1", Some(5)),
+            ("-1.2", None),
+            (" 5.1", None),
+            ("x", None),
+            ("", None),
+            (".5", None),
+        ] {
+            assert_eq!(major(version), expected, "{version:?}");
+        }
+    }
+
+    #[test]
     fn only_plain_versions_and_equal_majors_pass() {
         assert!(plain_version("5.2.3"));
         assert!(plain_version("5.3.0-rc1"));

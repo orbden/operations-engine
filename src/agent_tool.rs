@@ -630,6 +630,51 @@ mod tests {
     }
 
     #[test]
+    fn version_in_table() {
+        let long = |n: usize| format!("x {}", "9".repeat(n));
+        for (output, skip, expected) in [
+            ("x v1.2", 1, Some("1.2")),
+            ("x 1.2,", 1, Some("1.2")),
+            ("x 1.2,,", 1, Some("1.2")),
+            ("x vv1", 1, Some("v1")),
+            ("x 1:2.3~rc+b_1-x", 1, Some("1:2.3~rc+b_1-x")),
+            ("x\t1.2", 1, Some("1.2")),
+            ("  x   1.2  ", 1, Some("1.2")),
+            ("1.2", 0, Some("1.2")),
+            ("1.2\nsecond 3.4", 0, Some("1.2")),
+            ("x 1.2 y", 2, Some("y")),
+            ("x v", 1, None),
+            ("x", 1, None),
+            ("", 0, None),
+            ("\nx 1.2", 1, None),
+            ("x 1.2", 2, None),
+            ("x 1.2;", 1, None),
+            ("x 1.2\0", 1, None),
+            ("x a/b", 1, None),
+            ("x a\\b", 1, None),
+            ("x $(id)", 1, None),
+            ("x `id`", 1, None),
+            ("x 'a'", 1, None),
+            ("x \"a\"", 1, None),
+            ("x \u{e9}", 1, None),
+            ("x 1.2=3", 1, None),
+            (",", 0, None),
+        ] {
+            assert_eq!(
+                version_in(output, skip).as_deref(),
+                expected,
+                "{output:?} skip {skip}"
+            );
+        }
+        assert!(version_in(&long(64), 1).is_some());
+        assert_eq!(version_in(&long(65), 1), None);
+        // The length limit counts what is left after `v` and commas are removed.
+        assert!(version_in(&format!("x v{}", "9".repeat(64)), 1).is_some());
+        assert_eq!(version_in(&format!("x v{}", "9".repeat(65)), 1), None);
+        assert!(version_in(&format!("x {},", "9".repeat(64)), 1).is_some());
+    }
+
+    #[test]
     fn version_parsing_takes_the_expected_word_and_nothing_odd() {
         assert_eq!(
             version_in("rclone v1.75.1\nmore", 1).as_deref(),

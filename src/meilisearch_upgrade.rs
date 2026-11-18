@@ -170,6 +170,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn valid_semver_table() {
+        // Exactly three non-empty digit groups. Unlike
+        // `agent_validate::parse_semver` there is no numeric range limit, so
+        // groups of any length are accepted.
+        for accepted in [
+            "1.2.3",
+            "0.0.0",
+            "01.02.03",
+            "10.20.30",
+            "18446744073709551616.0.0",
+            "99999999999999999999999999.1.1",
+        ] {
+            assert!(valid_semver(accepted), "{accepted:?}");
+        }
+        for rejected in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.",
+            ".1.2",
+            "1..2",
+            "1.2.3.",
+            "+1.2.3",
+            "-1.2.3",
+            " 1.2.3",
+            "1.2.3 ",
+            "1.2.3\n",
+            "1.2.3\0",
+            "1.2.3-rc1",
+            "1.2.3+build",
+            "v1.2.3",
+            "1.2.x",
+            "1.2.3/..",
+            "\u{ff11}.2.3",
+            "1.2.\u{663}",
+        ] {
+            assert!(!valid_semver(rejected), "{rejected:?}");
+        }
+    }
+
+    #[test]
     fn valid_index_uid_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_index_uid",
