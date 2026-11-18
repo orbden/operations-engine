@@ -14,10 +14,8 @@
 //! Replaces the panel's `sudo rm -f`/`sudo mv -f` plus its own snapshot and
 //! restore (`delete_site`, `toggle_site`, `remove_runtime_config_checked`).
 
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+pub(crate) use crate::clock::unix_now_secs;
+use std::io;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -287,13 +285,6 @@ pub(crate) fn read_optional(
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-pub(crate) fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Runs `body` as one admitted, locked, idempotent, audited operation:

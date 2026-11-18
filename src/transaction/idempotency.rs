@@ -1,3 +1,4 @@
+use crate::clock::unix_now_secs;
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -168,13 +169,6 @@ pub fn list(root: &ManagedRoot) -> Vec<ClaimEntry> {
         });
     }
     entries
-}
-
-fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Looks up an existing claim for `key` without creating one.

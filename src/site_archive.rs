@@ -21,10 +21,11 @@
 //! before they write a new one, so a panel that died mid-sync cannot leave a
 //! copy of a site (or a database dump) behind forever.
 
+pub(crate) use crate::clock::unix_now_secs;
 use std::{
     io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -692,13 +693,6 @@ pub(crate) fn child(dir: &SiteRelativePath, name: &str) -> SiteRelativePath {
 
 pub(crate) fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-pub(crate) fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 /// The preflight / transaction-record / audit envelope shared by every

@@ -12,10 +12,8 @@
 //! reuses `runtime_config::execute::open_runtime_config_state` verbatim for
 //! identical per-`runtime_id` lock/state scoping to `activateConfig`.
 
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::io;
 
 use serde::{Deserialize, Serialize};
 
@@ -332,13 +330,6 @@ fn replay(
             })
         }
     }
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// Records a pre-commit failure and returns `error` unchanged — see

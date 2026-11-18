@@ -28,12 +28,12 @@
 //! enrol or unenrol cannot interleave with a deploy or rollback of the site,
 //! plus the manifest's resource lock shared with `site.renameManifest`.
 
+use crate::clock::unix_now_secs;
 use std::{
     fmt, fs,
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -558,13 +558,6 @@ fn fail(
 
 fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use crate::process::{self, CancellationToken, ProcessLimits, ProcessRequest, Pro
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, UNIX_EPOCH},
 };
 
 pub const OPERATION: &str = "system.updatesStatus";
@@ -584,11 +584,7 @@ fn security_updates(ctx: &Context<'_>, cancellation: &CancellationToken) -> Secu
     SecurityUpdates::Known { enabled }
 }
 
-pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
+pub use crate::clock::unix_now_secs as now_unix;
 
 #[cfg(all(test, unix))]
 mod tests {

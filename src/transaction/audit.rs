@@ -1,4 +1,5 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -125,13 +126,6 @@ pub fn append(
     let mut json = serde_json::to_vec(record).map_err(|_| AuditError::Serialization)?;
     json.push(b'\n');
     root.append(path, &json).map_err(|_| AuditError::Io)
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

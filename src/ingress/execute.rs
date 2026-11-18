@@ -5,10 +5,8 @@
 //! preflight/commit/audit pattern; this module only orders the steps this
 //! operation needs and records what happened.
 
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::io;
 
 use crate::{
     compose,
@@ -438,13 +436,6 @@ pub(crate) fn state_path_for(request_id: RequestId) -> SiteRelativePath {
 /// `audit/events.jsonl`.
 pub(crate) fn audit_log_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(all(test, unix))]

@@ -22,13 +22,14 @@
 //! hold a full database dump, so the panel discards them as soon as they are
 //! transferred, and also after a failed migration.
 
+use crate::clock::unix_now_secs;
 use crate::util::sha256_reader;
 use std::{
     fs,
     io::{self},
     os::unix::fs::FileTypeExt,
     path::{Component, Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -752,13 +753,6 @@ where
 
 fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

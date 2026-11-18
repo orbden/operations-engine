@@ -1,7 +1,5 @@
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::io;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -169,13 +167,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TransactionState, StateError> {
         return Err(StateError::Corrupt);
     }
     Ok(state)
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

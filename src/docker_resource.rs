@@ -34,8 +34,9 @@
 //!   (`docker-resource`); lock, idempotency key, transaction record and audit
 //!   entry come from `mutation::preflight`.
 
+use crate::clock::unix_now_secs;
 use crate::{
-    docker_container::{Error, MANAGED_PROJECT, Stage, fail, now_secs, rel, replay, run_docker},
+    docker_container::{Error, MANAGED_PROJECT, Stage, fail, rel, replay, run_docker},
     filesystem::ManagedRoot,
     mutation::preflight,
     process::{
@@ -561,7 +562,7 @@ pub fn execute_network(
                     action: "create".into(),
                     name: req.name.clone(),
                     driver: Some(driver.clone()),
-                    completed_at_unix_secs: now_secs(),
+                    completed_at_unix_secs: unix_now_secs(),
                 })
             }
             NetworkAction::Remove => {
@@ -608,7 +609,7 @@ pub fn execute_network(
                     action: "remove".into(),
                     name: req.name.clone(),
                     driver: None,
-                    completed_at_unix_secs: now_secs(),
+                    completed_at_unix_secs: unix_now_secs(),
                 })
             }
         },
@@ -667,7 +668,7 @@ pub fn execute_pull(
                 reference: req.reference.as_str().to_owned(),
                 output: tail,
                 output_truncated: truncated || output.stdout.truncated,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -748,7 +749,7 @@ pub fn execute_image_remove(
             Ok(ImageRemoveResult {
                 image_id: id.to_owned(),
                 force: req.force,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -816,7 +817,7 @@ pub fn execute_volume_remove(
             )?;
             Ok(VolumeRemoveResult {
                 name: req.name.clone(),
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )

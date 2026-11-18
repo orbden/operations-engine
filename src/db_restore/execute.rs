@@ -3,7 +3,7 @@
 //! cycle (see `db_restore`'s module doc comment for why) - this is the
 //! smallest of this engine's mutation pipelines.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
 
 use crate::{
     db_restore::{DbType, OPERATION, RestoreRequest, RestoreResult},
@@ -365,13 +365,6 @@ fn state_path_for(request_id: RequestId) -> SiteRelativePath {
 
 fn audit_log_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(all(test, unix))]

@@ -1,3 +1,4 @@
+use crate::clock::unix_now_secs;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -19,7 +20,6 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const PASSWORD_LEN: usize = 32;
 
@@ -144,13 +144,6 @@ impl Error {
             ),
         }
     }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// 32 alphanumeric characters from the kernel's random source.
@@ -398,7 +391,7 @@ pub fn ensure(
         created: !existed,
         password_issued: password.is_some(),
         limits: LIMITS,
-        completed_at_unix_secs: now_secs(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     let ensured = match password {
         Some(password) => Ensured::Issued(Box::new(SecretResult::new(
@@ -459,7 +452,7 @@ pub fn revoke(
         host: HOST.to_owned(),
         database: req.database.as_str().to_owned(),
         revoked,
-        completed_at_unix_secs: now_secs(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     if !commit(
         &mut begun,

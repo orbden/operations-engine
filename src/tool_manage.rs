@@ -14,6 +14,7 @@
 //! reading `<tools>/<name>/current/<file>` sees the old or the new tool, never
 //! a partial one. The selection is recorded in the engine state root.
 
+use crate::clock::unix_now_secs;
 use crate::util::sha256_hex;
 use crate::{
     engine::fetch,
@@ -30,12 +31,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io,
-    path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, io, path::Path, time::Duration};
 
 pub const INSTALL: &str = "tool.install";
 pub const REMOVE: &str = "tool.remove";
@@ -259,19 +255,12 @@ fn rel(value: impl AsRef<Path>) -> SiteRelativePath {
     SiteRelativePath::parse(value).expect("static tool paths are valid")
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn result(tool: Tool, changed: bool, version: Option<String>) -> ToolResult {
     ToolResult {
         tool: tool.name().to_owned(),
         changed,
         version,
-        completed_at_unix_secs: now(),
+        completed_at_unix_secs: unix_now_secs(),
     }
 }
 

@@ -4,10 +4,8 @@
 //! comments for the reasoning behind the shared preflight/commit/audit
 //! pattern; this module only orders the steps this operation needs.
 
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::io;
 
 use crate::{
     compose_config::{
@@ -346,13 +344,6 @@ fn state_path_for(request_id: RequestId) -> SiteRelativePath {
 
 fn audit_log_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(all(test, unix))]

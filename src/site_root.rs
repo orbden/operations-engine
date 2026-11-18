@@ -25,7 +25,6 @@ use std::{
     ffi::OsString,
     io,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cap_std::fs::MetadataExt;

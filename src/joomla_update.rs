@@ -27,6 +27,7 @@
 //! steps have no Composer step, and the database connection comes from
 //! `configuration.php` instead of Drush.
 
+use crate::clock::unix_now_secs;
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
     drupal_action::{
@@ -48,10 +49,7 @@ use crate::{
     wordpress_migrate_export::sha256_file,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::Path;
 
 pub const CORE: &str = "joomla.updateCore";
 pub const RESTORE: &str = "joomla.restoreUpdate";
@@ -322,13 +320,6 @@ struct Manifest {
     database_sha256: String,
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn rel(path: String) -> SiteRelativePath {
     SiteRelativePath::parse(path).unwrap()
 }
@@ -503,7 +494,8 @@ mod steps {
     //! `WCP_FAILPOINT=joomla-update-after-<step>` kills the process after a
     //! step is written (failpoints feature, tests only).
 
-    use super::{Context, now, rel};
+    use super::{Context, rel};
+    use crate::clock::unix_now_secs;
     use crate::transaction::RequestId;
     pub use crate::update_steps::{Journal, Step};
 
@@ -520,7 +512,7 @@ mod steps {
     /// failpoint. Errors are ignored: the journal is diagnostic.
     pub fn record(ctx: &Context<'_>, id: RequestId, step: Step) {
         let journal = load(ctx, id).unwrap_or_default();
-        if let Some(bytes) = journal.with_step(step, now()) {
+        if let Some(bytes) = journal.with_step(step, unix_now_secs()) {
             let _ = ctx.backup_root.write_atomic(&path(id), &bytes);
         }
         crate::failpoint::hit(&step.failpoint("joomla"));
@@ -630,7 +622,7 @@ fn bundle(
         operation: req.operation().into(),
         request_id: req.request_id.to_string(),
         project_root: req.root().display().to_string(),
-        created_at_unix_secs: now(),
+        created_at_unix_secs: unix_now_secs(),
         previous_offline,
         version_before: version_before.to_owned(),
         files_sha256,
@@ -1006,7 +998,7 @@ fn run(
             reason: None,
             version_after: manifest.version_before.clone(),
             version_before: manifest.version_before,
-            completed_at_unix_secs: now(),
+            completed_at_unix_secs: unix_now_secs(),
         });
     }
 
@@ -1049,7 +1041,7 @@ fn run(
                 reason: None,
                 version_before: installed,
                 version_after: target,
-                completed_at_unix_secs: now(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         }
         Err(reason) => {
@@ -1065,7 +1057,7 @@ fn run(
                 reason: Some(reason),
                 version_before: installed.clone(),
                 version_after: installed,
-                completed_at_unix_secs: now(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         }
     }

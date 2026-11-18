@@ -1,9 +1,9 @@
 //! The four operations. See the module docs in `mod.rs` for the contract.
 
+use crate::clock::unix_now_secs;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -242,13 +242,6 @@ impl Error {
     }
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 struct Target {
     root: ManagedRoot,
     canonical: String,
@@ -360,7 +353,7 @@ fn new_generation(
         kind: kind.name().into(),
         root: target.canonical.clone(),
         generation: number,
-        created_at_unix_secs: now(),
+        created_at_unix_secs: unix_now_secs(),
         algorithm: ALGORITHM.into(),
         scope: Scope::for_kind(kind).id(),
         limits: limits_record(limits),
@@ -768,7 +761,7 @@ pub fn accept(ctx: &Context<'_>, req: &Request) -> Result<Value, Error> {
         }
         index.accepted = Some(number);
         index.candidate = None;
-        index.accepted_at_unix_secs = Some(now());
+        index.accepted_at_unix_secs = Some(unix_now_secs());
         apply_retention(store, &mut index);
         store.save_index(&index).map_err(Error::Io)?;
         store.sweep(&index);

@@ -11,6 +11,7 @@ use super::{
     UNSCHEDULE_OPERATION, UnscheduleRequest, list_jobs, needs_credentials, tab_too_large, with_job,
     without_job,
 };
+use crate::clock::unix_now_secs;
 use crate::{
     backup_create,
     cron::execute::{InstallFailure, open_cron_state, read_current_tab},
@@ -28,7 +29,6 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The cron user whose crontab holds backup jobs. Backups are written under
 /// `/root/db-backups` and run `docker`, so the jobs belong to root.
@@ -142,13 +142,6 @@ impl Error {
             Self::Replayed { code, message } => (*code, message.clone()),
         }
     }
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn rel(path: &str) -> SiteRelativePath {
@@ -332,7 +325,7 @@ pub fn schedule(
             Ok(ScheduleResult {
                 replaced_jobs: replaced as u32,
                 crontab_sha256: hash(&content),
-                activated_at_unix_secs: now(),
+                activated_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -364,7 +357,7 @@ pub fn unschedule(
                 removed_jobs: removed as u32,
                 credentials_removed,
                 crontab_sha256: hash(&content),
-                activated_at_unix_secs: now(),
+                activated_at_unix_secs: unix_now_secs(),
             })
         },
     )

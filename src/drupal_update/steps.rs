@@ -11,7 +11,8 @@
 //! `WCP_FAILPOINT=drupal-update-after-<step>` (failpoints feature). The steps are the
 //! shared ones of `update_steps`.
 
-use super::{Context, now, rel};
+use super::{Context, rel};
+use crate::clock::unix_now_secs;
 use crate::transaction::RequestId;
 pub use crate::update_steps::{Journal, Step};
 
@@ -28,7 +29,7 @@ pub(super) fn load(ctx: &Context<'_>, id: RequestId) -> Option<Journal> {
 /// failpoint. Errors are ignored: the journal is diagnostic.
 pub fn record(ctx: &Context<'_>, id: RequestId, step: Step) {
     let journal = load(ctx, id).unwrap_or_default();
-    if let Some(bytes) = journal.with_step(step, now()) {
+    if let Some(bytes) = journal.with_step(step, unix_now_secs()) {
         let _ = ctx.backup_root.write_atomic(&path(id), &bytes);
     }
     crate::failpoint::hit(&step.failpoint("drupal"));

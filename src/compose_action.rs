@@ -36,6 +36,7 @@
 //! - Timeouts bound every verb; after a timeout the outcome is unknown and a
 //!   retry with the same idempotency key replays the recorded failure.
 
+use crate::clock::unix_now_secs;
 use crate::{
     compose_config::{execute::open_compose_state, route_path},
     error::ErrorCode,
@@ -53,7 +54,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const ACTION_OPERATION: &str = "compose.action";
 pub const REMOVE_OPERATION: &str = "compose.remove";
@@ -414,13 +415,6 @@ fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 /// Resolves the stack's compose file to an absolute path inside the compose
 /// root. `NotFound` for a missing file, `PathRefused` for a symlinked stack
 /// directory or an escape.
@@ -562,7 +556,7 @@ pub fn execute_action(
                 action: req.action,
                 output: text,
                 truncated,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -586,7 +580,7 @@ pub fn execute_remove(
                 removed,
                 output,
                 truncated,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             };
             let file = match compose_file(ctx, &req.stack_name) {
                 Ok(file) => file,

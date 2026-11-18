@@ -18,12 +18,13 @@
 //! If the agent's lock is already held, nothing is started. A run is not
 //! journaled by the engine; the agent's heartbeat and log are the record.
 
+use crate::clock::unix_now_secs;
 use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -120,12 +121,6 @@ pub struct RunReport {
     pub result: Option<Value>,
     pub stdout: String,
     pub stderr: String,
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn tail(bytes: &[u8]) -> String {
@@ -241,7 +236,7 @@ pub fn run(
             // A lock inherited from the caller must not make the script skip its own.
             .env(agent_helper::LOCK_HELD_ENV, "");
     }
-    let started_secs = now_secs();
+    let started_secs = unix_now_secs();
     let started = Instant::now();
     let output = process::run(
         &request,

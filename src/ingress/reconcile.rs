@@ -17,10 +17,8 @@
 //! `mv` sequence, every step here is a `ManagedRoot` filesystem call - no
 //! shell string is built anywhere in this path.
 
-use std::{
-    io,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::io;
 
 use serde::{Deserialize, Serialize};
 
@@ -474,13 +472,6 @@ fn replay(
             })
         }
     }
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]
