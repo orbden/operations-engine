@@ -191,7 +191,7 @@ pub const CONFIG_UNAVAILABLE_MESSAGE: &str = "engine configuration is unavailabl
 mod tests {
     use super::{
         CONFIG_UNAVAILABLE_MESSAGE, ContentFileError, MAX_CONTENT_BYTES, read_content_file,
-        read_root_owned_content_file,
+        read_root_owned_content_file, read_root_owned_content_file_bounded,
     };
 
     /// Pins the literal, spelled out rather than compared to the constant,
@@ -304,6 +304,87 @@ mod tests {
         symlink(&real, &link).unwrap();
         assert_eq!(
             read_root_owned_content_file(&link),
+            Err(ContentFileError::Unreadable)
+        );
+    }
+
+    /// Behaviour that sets the root-owned reader apart from every other bounded
+    /// read in the engine (for example `joomla_update::read_text`, which takes
+    /// any owner and mode): the file must belong to root and not be group or
+    /// world writable. A test process that is not root can only observe the
+    /// refusal; as root it also pins the accepted shapes.
+    #[cfg(unix)]
+    #[test]
+    fn the_root_owned_reader_requires_root_ownership_and_a_closed_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("owners.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // SAFETY: geteuid has no preconditions.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        if !is_root {
+            assert_eq!(
+                read_root_owned_content_file_bounded(&path, 16),
+                Err(ContentFileError::Unreadable)
+            );
+            return;
+        }
+        assert_eq!(
+            read_root_owned_content_file_bounded(&path, 16).unwrap(),
+            "{}"
+        );
+        std::fs::write(&path, "x".repeat(16)).unwrap();
+        assert_eq!(
+            read_root_owned_content_file_bounded(&path, 16)
+                .unwrap()
+                .len(),
+            16
+        );
+        std::fs::write(&path, "x".repeat(17)).unwrap();
+        assert_eq!(
+            read_root_owned_content_file_bounded(&path, 16),
+            Err(ContentFileError::TooLarge)
+        );
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert_eq!(
+            read_root_owned_content_file_bounded(&path, 16),
+            Err(ContentFileError::Unreadable)
+        );
+        std::fs::write(&path, "{}").unwrap();
+        for mode in [0o664, 0o646, 0o666, 0o620] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(
+                read_root_owned_content_file_bounded(&path, 16),
+                Err(ContentFileError::Unreadable),
+                "{mode:o}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_root_owned_reader_never_opens_a_fifo_or_a_directory_blocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("req.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if made {
+            assert_eq!(
+                read_root_owned_content_file_bounded(&fifo, 16),
+                Err(ContentFileError::Unreadable)
+            );
+        }
+        assert_eq!(
+            read_root_owned_content_file_bounded(directory.path(), 16),
+            Err(ContentFileError::Unreadable)
+        );
+        assert_eq!(
+            read_root_owned_content_file_bounded(&directory.path().join("none"), 16),
             Err(ContentFileError::Unreadable)
         );
     }
