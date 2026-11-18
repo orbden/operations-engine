@@ -520,9 +520,7 @@ fn resolve(
     .map_err(|e| Error::Run(Stage::Inspect, e))?;
     match output.termination {
         ProcessTermination::Exited { success: true, .. } => {}
-        ProcessTermination::Exited { .. }
-            if String::from_utf8_lossy(&output.stderr.bytes).contains("No such") =>
-        {
+        ProcessTermination::Exited { .. } if output.stderr.text().contains("No such") => {
             return Err(Error::NotFound);
         }
         _ => {
@@ -532,7 +530,7 @@ fn resolve(
             ));
         }
     }
-    parse_inspect(&String::from_utf8_lossy(&output.stdout.bytes), requested)
+    parse_inspect(&output.stdout.text(), requested)
 }
 
 fn parse_inspect(stdout: &str, requested: &ContainerId) -> Result<Resolved, Error> {

@@ -573,7 +573,7 @@ fn security_updates(ctx: &Context<'_>, cancellation: &CancellationToken) -> Secu
             reason: "apt-config did not finish successfully",
         };
     }
-    let text = String::from_utf8_lossy(&output.stdout.bytes);
+    let text = output.stdout.text();
     // `Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";`
     let enabled = text.lines().any(|line| {
         line.trim_end()

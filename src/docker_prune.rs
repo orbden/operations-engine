@@ -278,14 +278,14 @@ fn require_named_volume_safe_docker(
         VERSION_TIMEOUT,
         cancel,
     )?;
-    match server_major(&String::from_utf8_lossy(&output.stdout.bytes)) {
+    match server_major(&output.stdout.text()) {
         Some(major) if major >= MIN_VOLUME_PRUNE_MAJOR => Ok(()),
         _ => Err(Error::VolumePruneUnsafe),
     }
 }
 
 fn bounded_output(stdout: &process::CapturedOutput) -> (String, bool) {
-    let text = String::from_utf8_lossy(&stdout.bytes);
+    let text = stdout.text();
     let head = crate::util::truncate_utf8_head(&text, MAX_OUTPUT_BYTES);
     (head.to_owned(), stdout.truncated || head.len() < text.len())
 }

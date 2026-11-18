@@ -50,7 +50,7 @@ pub(super) fn docker(
             SubprocessDiagnostics::from_output(ctx.docker, &output),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout.bytes).into_owned())
+    Ok(output.stdout.text().into_owned())
 }
 
 /// Stack lock, then this scope's preflight (lock + idempotency), then

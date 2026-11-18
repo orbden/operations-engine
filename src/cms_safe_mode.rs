@@ -666,7 +666,7 @@ fn joomla_call(
     if output.stdout.truncated {
         return Err(Error::Unreadable);
     }
-    let text = String::from_utf8_lossy(&output.stdout.bytes);
+    let text = output.stdout.text();
     let line = text
         .lines()
         .rev()

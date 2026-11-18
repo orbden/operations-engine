@@ -88,16 +88,14 @@ pub fn resolve_allowed_revision(
         )));
     }
 
-    let matched_branch = String::from_utf8_lossy(&output.stdout.bytes)
-        .lines()
-        .find_map(|line| {
-            let (sha, reference) = line.split_once('\t')?;
-            if sha == revision.as_str() {
-                reference.strip_prefix("refs/heads/").map(str::to_owned)
-            } else {
-                None
-            }
-        });
+    let matched_branch = output.stdout.text().lines().find_map(|line| {
+        let (sha, reference) = line.split_once('\t')?;
+        if sha == revision.as_str() {
+            reference.strip_prefix("refs/heads/").map(str::to_owned)
+        } else {
+            None
+        }
+    });
 
     matched_branch.ok_or(Error::NotAuthorized)
 }

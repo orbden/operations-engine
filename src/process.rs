@@ -131,6 +131,13 @@ pub struct CapturedOutput {
     pub truncated: bool,
 }
 
+impl CapturedOutput {
+    /// The captured bytes as text; invalid UTF-8 becomes U+FFFD.
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.bytes)
+    }
+}
+
 #[derive(Debug)]
 pub struct ProcessOutput {
     pub termination: ProcessTermination,
@@ -593,6 +600,19 @@ mod tests {
     use crate::error::ErrorCode;
 
     #[test]
+    fn captured_text_is_lossy_utf8() {
+        let out = |bytes: &[u8]| CapturedOutput {
+            bytes: bytes.to_vec(),
+            truncated: false,
+        };
+        assert_eq!(out(b"").text(), "");
+        assert_eq!(out("ok \u{439}".as_bytes()).text(), "ok \u{439}");
+        assert_eq!(out(&[b'a', 0xff, b'b']).text(), "a\u{fffd}b");
+        // A character cut by the capture limit shows as one replacement character.
+        assert_eq!(out(&"\u{20ac}".as_bytes()[..2]).text(), "\u{fffd}");
+    }
+
+    #[test]
     fn bounds_captured_output() {
         let output = run(
             &ProcessRequest::new("printf").args(["123456789"]),
@@ -631,7 +651,7 @@ mod tests {
         )
         .expect("process should run");
 
-        let stdout = String::from_utf8_lossy(&output.stdout.bytes);
+        let stdout = output.stdout.text();
         assert_eq!(
             stdout.trim(),
             format!("compose-env-override-{}", inherited_value.to_string_lossy())
@@ -653,10 +673,7 @@ mod tests {
         )
         .expect("process should run");
 
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout.bytes).trim(),
-            canonical.to_string_lossy()
-        );
+        assert_eq!(output.stdout.text().trim(), canonical.to_string_lossy());
     }
 
     #[test]
@@ -801,7 +818,9 @@ mod tests {
                 &CancellationToken::default(),
             )
             .expect("id should run");
-            String::from_utf8_lossy(&output.stdout.bytes)
+            output
+                .stdout
+                .text()
                 .trim()
                 .parse::<u32>()
                 .expect("id should print a number")
