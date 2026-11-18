@@ -615,6 +615,15 @@ fn fail(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_is_32_alphanumeric_characters_and_not_repeated() {
+        let a = new_secret().unwrap();
+        let b = new_secret().unwrap();
+        assert_eq!(a.len(), SECRET_LEN);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(a, b);
+    }
     use std::{fs, os::unix::fs::PermissionsExt};
 
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
