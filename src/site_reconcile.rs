@@ -565,14 +565,8 @@ fn reconcile_target(ctx: &Context<'_>, req: &Request) -> Result<ReconcileResult,
     )
 }
 fn read_bounded(scope: &ManagedRoot, path: &SiteRelativePath) -> Option<String> {
-    let mut text = String::new();
-    scope
-        .open_regular_read(path)
-        .ok()?
-        .take(65537)
-        .read_to_string(&mut text)
-        .ok()?;
-    (text.len() <= 65536).then_some(text)
+    let file = scope.open_regular_read(path).ok()?;
+    String::from_utf8(crate::util::read_bounded(file, 65536).ok()??).ok()
 }
 
 /// Finishes every interrupted `site.migrateRuntime` from its journal.
@@ -1874,5 +1868,36 @@ mod tests {
         fs::write(dir.join("pending.json"), "{}").unwrap();
         assert_eq!(fx.run().other_pending, 1);
         assert!(dir.join("pending.json").exists());
+    }
+
+    #[test]
+    fn read_bounded_text_limit_symlink_and_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let scope = ManagedRoot::open(&TrustedRoot::parse(dir.path()).unwrap()).unwrap();
+        let rel = |name: &str| SiteRelativePath::parse(name).unwrap();
+        let write = |name: &str, bytes: &[u8]| fs::write(dir.path().join(name), bytes).unwrap();
+        assert_eq!(read_bounded(&scope, &rel("missing")), None);
+        write("empty", b"");
+        assert_eq!(read_bounded(&scope, &rel("empty")), Some(String::new()));
+        write("exact", &vec![b'a'; 65536]);
+        assert_eq!(read_bounded(&scope, &rel("exact")).unwrap().len(), 65536);
+        write("over", &vec![b'a'; 65537]);
+        assert_eq!(read_bounded(&scope, &rel("over")), None);
+        // Multi-byte text exactly at the limit is kept; one byte more is refused even
+        // though the extra read byte may split a character.
+        write("wide", "\u{439}".repeat(32768).as_bytes());
+        assert_eq!(read_bounded(&scope, &rel("wide")).unwrap().len(), 65536);
+        write(
+            "widemore",
+            format!("{}\u{439}", "a".repeat(65535)).as_bytes(),
+        );
+        assert_eq!(read_bounded(&scope, &rel("widemore")), None);
+        write("binary", &[0xff, b'x']);
+        assert_eq!(read_bounded(&scope, &rel("binary")), None);
+        write("real", b"x");
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+        assert_eq!(read_bounded(&scope, &rel("link")), None);
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        assert_eq!(read_bounded(&scope, &rel("sub")), None);
     }
 }
