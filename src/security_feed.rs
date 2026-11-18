@@ -185,14 +185,7 @@ fn parse_utc(value: &str) -> Option<i64> {
     {
         return None;
     }
-    // Days from civil (Howard Hinnant's algorithm).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let days = crate::clock::days_from_civil(year, month, day);
     Some(days * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
