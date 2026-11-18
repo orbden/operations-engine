@@ -22,6 +22,7 @@
 //!   purged: a later request finishes it from the same engine-written
 //!   repository, or refuses when that repository is not in place.
 
+use crate::util::sha256_hex;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -38,7 +39,6 @@ use crate::{
         state::{self, TransactionStatus},
     },
 };
-use sha2::{Digest, Sha256};
 use std::{
     io,
     path::Path,
@@ -302,16 +302,6 @@ fn diagnostics_code(diagnostics: &SubprocessDiagnostics) -> ErrorCode {
     } else {
         ErrorCode::SubprocessFailed
     }
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 15) as usize] as char);
-    }
-    out
 }
 
 // ── subprocesses ─────────────────────────────────────────────────────────────
@@ -740,7 +730,7 @@ fn install_fresh(
     pre_commit: PreCommit,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
-    if hex_digest(&Sha256::digest(ctx.keyring)) != ctx.keyring_sha256 {
+    if sha256_hex(ctx.keyring) != ctx.keyring_sha256 {
         return Err(Error::KeyringMismatch);
     }
     let keyring_path = SiteRelativePath::parse(KEYRING_NAME).unwrap();
@@ -1169,10 +1159,7 @@ case "$1" in info) echo 28.5.0 ;; compose) echo 2.39.4 ;; esac
 
     #[test]
     fn embedded_keyring_matches_its_pin() {
-        assert_eq!(
-            hex_digest(&Sha256::digest(DOCKER_KEYRING)),
-            DOCKER_KEYRING_SHA256
-        );
+        assert_eq!(sha256_hex(DOCKER_KEYRING), DOCKER_KEYRING_SHA256);
     }
 
     #[test]

@@ -16,6 +16,7 @@
 //! (`installed: false`), exactly like the previous `command -v rclone`
 //! guard: this operation never upgrades or replaces an operator's rclone.
 
+use crate::util::sha256_hex;
 use crate::{
     engine::fetch,
     error::ErrorCode,
@@ -30,7 +31,6 @@ use crate::{
         state::{self, TransactionStatus},
     },
 };
-use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read},
     path::Path,
@@ -212,16 +212,6 @@ impl Error {
     }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 15) as usize] as char);
-    }
-    out
-}
-
 // ── zip ──────────────────────────────────────────────────────────────────────
 //
 // A deliberately minimal reader: the archive is already SHA-256-pinned, so
@@ -358,7 +348,7 @@ fn install(ctx: &Context<'_>, pre_commit: PreCommit) -> Result<InstallResult, Er
         return Ok(result(false, path, None));
     }
     let archive = (ctx.fetch)(&ctx.artifact.url).map_err(Error::Fetch)?;
-    if hex_digest(&Sha256::digest(&archive)) != ctx.artifact.sha256 {
+    if sha256_hex(&archive) != ctx.artifact.sha256 {
         return Err(Error::DigestMismatch);
     }
     let binary = extract_entry(&archive, &ctx.artifact.entry, MAX_BINARY_BYTES)?;
@@ -606,7 +596,7 @@ mod tests {
                 url: "https://downloads.example.test/rclone.zip".into(),
                 sha256: sha256
                     .map(str::to_owned)
-                    .unwrap_or_else(|| hex_digest(&Sha256::digest(archive))),
+                    .unwrap_or_else(|| sha256_hex(archive)),
                 entry: ENTRY.into(),
             };
             let fetch = |_: &str| {

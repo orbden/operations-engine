@@ -2,6 +2,7 @@
 //! verify its declared SHA-256 before publishing it. The caller verifies the
 //! snapshot manifest and supplies the digest; this operation owns the mutation.
 
+use crate::util::hex;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -17,16 +18,6 @@ use crate::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::Path, time::Duration};
-
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 15) as usize] as char);
-    }
-    out
-}
 
 pub const OPERATION: &str = "backup.importRemote";
 pub const IMPORT_ROOT: &str = "/root/db-backups/imports";
@@ -301,7 +292,7 @@ fn download(
             }
             hasher.update(&chunk[..count]);
         }
-        let actual = hex_digest(&hasher.finalize());
+        let actual = hex(&hasher.finalize());
         if actual != req.digest {
             return Err(Error::DigestMismatch);
         }
@@ -370,6 +361,7 @@ fn fail(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::util::sha256_hex;
     use std::os::unix::fs::PermissionsExt;
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
@@ -406,7 +398,7 @@ mod tests {
             rclone_config: dir.path(),
             rclone_program: rclone.to_str().unwrap(),
         };
-        let hash = hex_digest(&Sha256::digest(b"hello"));
+        let hash = sha256_hex(b"hello");
         let req = request(hash);
         let first = execute(&context, &req, &CancellationToken::default()).unwrap();
         assert_eq!(fs::read(&first.file_path).unwrap(), b"hello");

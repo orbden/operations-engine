@@ -2,6 +2,7 @@
 //! verifies its size and digest, then runs only fixed Docker/WP-CLI argv.
 //! Import changes WordPress data and has no automatic rollback.
 
+use crate::util::hex;
 use crate::{
     db_restore::ContainerName,
     error::ErrorCode,
@@ -35,15 +36,6 @@ use std::{
 
 pub const OPERATION: &str = "wordpress.import";
 pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
-
-fn hex_digest(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut hex, "{byte:02x}").unwrap();
-    }
-    hex
-}
 
 #[derive(Debug)]
 pub enum RequestError {
@@ -214,7 +206,7 @@ fn verify_artifact(ctx: &Context<'_>, req: &Request) -> Result<PathBuf, Error> {
         }
         digest.update(&buf[..n]);
     }
-    let computed = hex_digest(&digest.finalize());
+    let computed = hex(&digest.finalize());
     if total != req.byte_length || computed != req.sha256 {
         return Err(Error::InvalidArtifact);
     }
@@ -434,6 +426,7 @@ fn fail(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::util::sha256_hex;
     use std::os::unix::fs::PermissionsExt;
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
@@ -442,7 +435,7 @@ mod tests {
         let artifact = dir.path().join(format!("{ID}.import.xml"));
         fs::write(&artifact, b"<wxr></wxr>").unwrap();
         fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
-        let hash = hex_digest(&Sha256::digest(b"<wxr></wxr>"));
+        let hash = sha256_hex(b"<wxr></wxr>");
         let plan = serde_json::json!({
             "container":"site-php", "root":dir.path(), "uid":1000, "gid":1000,
             "sha256":hash, "byteLength":11,

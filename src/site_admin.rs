@@ -45,6 +45,7 @@
 //!   only `{adminUserId, adminLogin, issuedAt, expiresAt}` is stored in the
 //!   transaction state and returned by an idempotent replay.
 
+use crate::util::sha256_hex;
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
     error::ErrorCode,
@@ -64,7 +65,6 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -756,14 +756,6 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
-}
-
 /// 244 random bits as 64 lowercase hex characters (two v4 UUIDs).
 fn new_token() -> String {
     format!(
@@ -774,7 +766,7 @@ fn new_token() -> String {
 }
 
 fn token_hash(token: &str) -> String {
-    hex(&Sha256::digest(token.as_bytes()))
+    sha256_hex(token.as_bytes())
 }
 
 /// The mu-plugin that redeems one token. Only a hash, a timestamp and a user

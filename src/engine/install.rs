@@ -5,9 +5,8 @@
 //! `deploy::execute::execute`'s shape — see that module's doc comments
 //! for the reasoning behind the shared preflight/commit/audit pattern.
 
+use crate::util::sha256_hex;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use sha2::{Digest, Sha256};
 
 use crate::{
     engine::{
@@ -601,17 +600,6 @@ fn state_path_for(request_id: RequestId) -> SiteRelativePath {
 
 fn audit_log_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("literal path is valid")
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
 }
 
 fn unix_now_secs() -> u64 {

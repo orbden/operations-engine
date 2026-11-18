@@ -1,4 +1,5 @@
 //! Immutable database/snapshot evidence for explicit content recovery.
+use crate::util::hex;
 use crate::{
     filesystem::ManagedRoot,
     process::{self, CancellationToken, ProcessLimits, ProcessRequest, ProcessTermination},
@@ -41,13 +42,7 @@ pub fn digest(mut file: File) -> io::Result<String> {
         }
         hash.update(&buffer[..n]);
     }
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut text = String::with_capacity(64);
-    for byte in hash.finalize() {
-        text.push(HEX[(byte >> 4) as usize] as char);
-        text.push(HEX[(byte & 15) as usize] as char);
-    }
-    Ok(text)
+    Ok(hex(&hash.finalize()))
 }
 pub fn record(
     scope: &ManagedRoot,

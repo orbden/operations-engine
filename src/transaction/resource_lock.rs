@@ -19,9 +19,8 @@
 //! is ever asked to touch, which content-root validation upstream already
 //! keeps finite.
 
-use std::{fmt::Write as _, path::Path};
-
-use sha2::{Digest, Sha256};
+use crate::util::sha256_hex;
+use std::path::Path;
 
 use crate::{
     filesystem::ManagedRoot,
@@ -46,12 +45,7 @@ fn locks_dir() -> SiteRelativePath {
 /// `req.staging_root`/`req.source_root` string this crate's own preflight
 /// scopes already hash the identical way).
 pub fn canonical_hash(root: &Path) -> String {
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
-    let mut hash = String::new();
-    for byte in digest {
-        write!(&mut hash, "{byte:02x}").unwrap();
-    }
-    hash
+    sha256_hex(root.as_os_str().as_encoded_bytes())
 }
 
 /// Acquires the exclusive resource lock for `root` beneath `engine_state` -

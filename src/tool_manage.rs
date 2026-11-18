@@ -14,6 +14,7 @@
 //! reading `<tools>/<name>/current/<file>` sees the old or the new tool, never
 //! a partial one. The selection is recorded in the engine state root.
 
+use crate::util::sha256_hex;
 use crate::{
     engine::fetch,
     error::ErrorCode,
@@ -29,7 +30,6 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io,
@@ -259,16 +259,6 @@ fn rel(value: impl AsRef<Path>) -> SiteRelativePath {
     SiteRelativePath::parse(value).expect("static tool paths are valid")
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 15) as usize] as char);
-    }
-    out
-}
-
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -302,7 +292,7 @@ fn intact(tool: Tool, tool_dir: &ManagedRoot, version: &str, pinned: &Artifact) 
     };
     version_dir
         .read_bytes(&rel(tool.file()))
-        .is_ok_and(|bytes| hex_digest(&Sha256::digest(bytes)) == pinned.sha256)
+        .is_ok_and(|bytes| sha256_hex(&bytes) == pinned.sha256)
 }
 
 fn read_selection(ctx: &Context<'_>) -> BTreeMap<String, String> {
@@ -372,7 +362,7 @@ fn install(
     }
 
     let bytes = (ctx.fetch)(&artifact.url).map_err(Error::Fetch)?;
-    if hex_digest(&Sha256::digest(&bytes)) != artifact.sha256 {
+    if sha256_hex(&bytes) != artifact.sha256 {
         return Err(Error::DigestMismatch);
     }
     if !tool.looks_valid(&bytes) {
@@ -613,7 +603,7 @@ mod tests {
         ) -> Result<ToolResult, Error> {
             let state = managed(&self.path("state"));
             let tools = managed(&self.path("tools"));
-            let sha256 = hex_digest(&Sha256::digest(pinned));
+            let sha256 = sha256_hex(pinned);
             let catalog = |_: Tool| Artifact {
                 version: VERSION.into(),
                 url: "https://downloads.example.test/wp.phar".into(),
@@ -639,7 +629,7 @@ mod tests {
         fn status(&self, pinned: &[u8]) -> StatusReport {
             let state = managed(&self.path("state"));
             let tools = managed(&self.path("tools"));
-            let sha256 = hex_digest(&Sha256::digest(pinned));
+            let sha256 = sha256_hex(pinned);
             let catalog = |_: Tool| Artifact {
                 version: VERSION.into(),
                 url: String::new(),
@@ -884,7 +874,7 @@ mod tests {
             let bytes =
                 fetch::fetch_bytes_bounded(&artifact.url, MAX_ARTIFACT_BYTES, FETCH_TIMEOUT)
                     .unwrap();
-            assert_eq!(hex_digest(&Sha256::digest(&bytes)), artifact.sha256);
+            assert_eq!(sha256_hex(&bytes), artifact.sha256);
             assert!(tool.looks_valid(&bytes));
         }
     }

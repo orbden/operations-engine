@@ -1,3 +1,4 @@
+use crate::util::sha256_hex;
 use crate::{
     backup_delete::{DeleteResult, OPERATION, Request},
     error::ErrorCode,
@@ -10,11 +11,7 @@ use crate::{
         state::{self, TransactionStatus},
     },
 };
-use sha2::{Digest, Sha256};
-use std::{
-    fmt::Write as _,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Context<'a> {
     pub engine_state: &'a ManagedRoot,
@@ -128,11 +125,7 @@ pub fn execute(
 }
 
 fn open_state(root: &ManagedRoot, identity: &[u8]) -> std::io::Result<ManagedRoot> {
-    let digest = Sha256::digest(identity);
-    let mut hash = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut hash, "{byte:02x}").expect("String writes cannot fail");
-    }
+    let hash = sha256_hex(identity);
     let path = SiteRelativePath::parse(format!("backup-delete/{hash}")).unwrap();
     root.create_dir_all(&path)?;
     let scope = root.open_managed_dir(&path)?;

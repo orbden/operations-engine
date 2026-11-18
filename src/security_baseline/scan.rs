@@ -11,6 +11,7 @@
 //!   a name it cannot record). An incomplete scan is `unknown`, never a
 //!   partial "match".
 
+use crate::util::hex;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -290,18 +291,10 @@ fn read_link_text(dir: &ManagedRoot, name: &str) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-pub fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut out, "{byte:02x}").unwrap();
-    }
-    out
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::util::sha256_hex;
     use crate::{security_baseline::Kind, site::TrustedRoot};
     use std::{fs, io::Write as _, os::unix::fs::symlink};
 
@@ -337,10 +330,7 @@ mod tests {
             paths,
             ["index.php", "sub/lib.inc", "wp-content/plugins/a/a.PHP"]
         );
-        assert_eq!(
-            scan.files["index.php"],
-            hex(&Sha256::digest(b"<?php echo 1;"))
-        );
+        assert_eq!(scan.files["index.php"], sha256_hex(b"<?php echo 1;"));
     }
 
     #[test]
@@ -370,7 +360,7 @@ mod tests {
         let paths: Vec<&str> = scan.files.keys().map(String::as_str).collect();
         assert_eq!(paths, ["a.php", "link.php"]);
         // The link is hashed by its text, never by the file behind it.
-        assert_ne!(scan.files["link.php"], hex(&Sha256::digest(b"outside")));
+        assert_ne!(scan.files["link.php"], sha256_hex(b"outside"));
     }
 
     #[test]
@@ -444,7 +434,7 @@ mod tests {
         );
         let (digest, size) = ok.ok().unwrap();
         assert_eq!(size, 7);
-        assert_eq!(digest, hex(&Sha256::digest(b"onemore")));
+        assert_eq!(digest, sha256_hex(b"onemore"));
         assert_eq!(opens, 2);
 
         let mut counter = 0u8;

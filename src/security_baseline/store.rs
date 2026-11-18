@@ -1,11 +1,12 @@
 //! On-disk layout of one site's baselines (see the module docs).
 
+use crate::util::hex;
 use std::{collections::BTreeMap, io};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{SCHEMA_VERSION, scan::hex};
+use super::SCHEMA_VERSION;
 use crate::{filesystem::ManagedRoot, site::SiteRelativePath};
 
 const ROOT_DIR: &str = "security-baselines";

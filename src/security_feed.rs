@@ -18,13 +18,13 @@
 //! an unreachable origin means freshness is unknown, never that the machine
 //! is safe.
 
+use crate::util::sha256_hex;
 use crate::{
     filesystem::ManagedRoot,
     site::SiteRelativePath,
     transaction::{RequestId, resource_lock},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -331,15 +331,6 @@ fn manifest_path_ok(path: &str) -> bool {
         && path
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'-' | b'_'))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(64);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 // ---- state ---------------------------------------------------------------------
@@ -708,7 +699,7 @@ fn check(
         Err(_) => return Err("unreachable"),
     };
     if manifest_bytes.len() as u64 != index.manifest.bytes
-        || hex(&Sha256::digest(&manifest_bytes)) != index.manifest.sha256
+        || sha256_hex(&manifest_bytes) != index.manifest.sha256
     {
         return Err("invalid");
     }

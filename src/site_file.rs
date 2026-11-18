@@ -51,6 +51,7 @@
 //! inode, size and mtime); if the removal fails the copy is taken back out. A
 //! file larger than 512 MiB is refused.
 
+use crate::util::hex;
 use std::{
     ffi::OsStr,
     io::{self, Read, Write},
@@ -366,14 +367,6 @@ pub(crate) fn open_parent(
         dir = dir.open_child_dir_nofollow(name).map_err(open_error)?;
     }
     Ok((dir, file.clone()))
-}
-
-fn hex(digest: &[u8]) -> String {
-    use std::fmt::Write as _;
-    digest.iter().fold(String::with_capacity(64), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
 }
 
 /// Writes `request.content` to the env file, replacing it atomically.
