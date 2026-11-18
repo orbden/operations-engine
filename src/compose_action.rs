@@ -391,14 +391,11 @@ fn run_docker(
 
 fn bounded(bytes: &[u8], already_truncated: bool) -> (String, bool) {
     let text = String::from_utf8_lossy(bytes);
-    if text.len() <= MAX_OUTPUT_BYTES {
-        return (text.into_owned(), already_truncated);
-    }
-    let mut end = MAX_OUTPUT_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_owned(), true)
+    let head = crate::util::truncate_utf8_head(&text, MAX_OUTPUT_BYTES);
+    (
+        head.to_owned(),
+        already_truncated || head.len() < text.len(),
+    )
 }
 
 /// stdout when there is any, otherwise stderr: Compose reports progress of
@@ -1100,5 +1097,30 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::StackBusy));
         assert_eq!(f.calls(), "");
+    }
+
+    #[test]
+    fn bounded_cuts_the_head_at_a_character_boundary() {
+        assert_eq!(bounded(b"", false), (String::new(), false));
+        assert_eq!(bounded(b"", true), (String::new(), true));
+        let exact = "a".repeat(MAX_OUTPUT_BYTES);
+        assert_eq!(bounded(exact.as_bytes(), false), (exact.clone(), false));
+        assert_eq!(bounded(exact.as_bytes(), true), (exact.clone(), true));
+        let over = "a".repeat(MAX_OUTPUT_BYTES + 1);
+        assert_eq!(bounded(over.as_bytes(), false), (exact.clone(), true));
+        let wide = "я".repeat(MAX_OUTPUT_BYTES / 2 + 1);
+        assert_eq!(
+            bounded(wide.as_bytes(), false),
+            ("я".repeat(MAX_OUTPUT_BYTES / 2), true)
+        );
+        let odd = format!("a{}", "я".repeat(MAX_OUTPUT_BYTES / 2));
+        let (text, truncated) = bounded(odd.as_bytes(), false);
+        assert!(truncated);
+        assert_eq!(text.len(), MAX_OUTPUT_BYTES - 1);
+        assert!(text.starts_with('a') && text.ends_with('я'));
+        assert_eq!(
+            bounded(&[0xff, b'x'], false),
+            ("\u{fffd}x".to_owned(), false)
+        );
     }
 }
