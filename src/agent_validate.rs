@@ -574,6 +574,11 @@ fn valid_config_key(key: &str) -> bool {
     )
 }
 
+/// A host name or IPv4 text in a manifest's `network` list: letters, digits,
+/// `.` and `-`, starting and ending with a letter or digit. Deliberately
+/// stricter than the SMTP relay's host check (`wordpress_smtp_relay`), which
+/// also accepts IPv6 literals and so allows `:`, `[` and `]`; an agent's
+/// network entry is a name only.
 fn valid_host(host: &str) -> bool {
     let bytes = host.as_bytes();
     let edge = |b: u8| b.is_ascii_alphanumeric();
@@ -811,6 +816,74 @@ fn check_script(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn valid_host_pins_the_strict_host_name_grammar() {
+        // Strict: DNS-style names and IPv4 text only. Letters, digits, `.` and
+        // `-` inside, a letter or digit at both ends, at most 253 bytes. No
+        // port, no brackets, no IPv6.
+        for accepted in [
+            "a",
+            "A",
+            "9",
+            "example.com",
+            "a-b.c",
+            "1.2.3.4",
+            "a..b",
+            "a.-.b",
+            "UPPER.example",
+        ] {
+            assert!(valid_host(accepted), "{accepted:?}");
+        }
+        assert!(valid_host(&"a".repeat(253)));
+        assert!(!valid_host(&"a".repeat(254)));
+        for rejected in [
+            "",
+            ".",
+            "-",
+            ".a",
+            "a.",
+            "-a",
+            "a-",
+            "-a-",
+            "a b",
+            " a",
+            "a ",
+            "a\n",
+            "\na",
+            "a\0b",
+            "a\0",
+            "a:b",
+            "a:587",
+            "[::1]",
+            "::1",
+            "a/b",
+            "a\\b",
+            "a'b",
+            "a\"b",
+            "a_b",
+            "a,b",
+            "a;b",
+            "a@b",
+            "\u{e9}.com",
+            "a.\u{e9}",
+            "\u{ff21}",
+            "a\u{200b}b",
+            "https://a",
+            "a/../b",
+        ] {
+            assert!(!valid_host(rejected), "{rejected:?}");
+        }
+        for c in (0u8..=127).map(char::from) {
+            let middle = format!("a{c}a");
+            let expected = c.is_ascii_alphanumeric() || c == '.' || c == '-';
+            assert_eq!(valid_host(&middle), expected, "{middle:?}");
+            let edge = c.is_ascii_alphanumeric();
+            assert_eq!(valid_host(&format!("{c}a")), edge, "{c:?} first");
+            assert_eq!(valid_host(&format!("a{c}")), edge, "{c:?} last");
+            assert_eq!(valid_host(&c.to_string()), edge, "{c:?} alone");
+        }
+    }
 
     #[test]
     fn valid_config_key_pins_its_accepted_and_rejected_characters_and_length() {
