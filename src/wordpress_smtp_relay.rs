@@ -120,7 +120,11 @@ fn valid_text(value: &str, max_len: usize) -> bool {
 }
 
 /// A DNS name or an IPv4/IPv6 literal: no whitespace, quotes or anything a
-/// PHP string or mail transport would treat specially.
+/// PHP string or mail transport would treat specially. Deliberately looser
+/// than the agent manifest's `valid_host` (`agent_validate`): `:`, `[` and
+/// `]` are allowed for IPv6 literals and there is no rule about the first and
+/// last character. The value is passed on as JSON data (`constants`),
+/// not as part of a command line.
 fn valid_host(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 253

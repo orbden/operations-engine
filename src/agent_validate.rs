@@ -574,6 +574,11 @@ fn valid_config_key(key: &str) -> bool {
     )
 }
 
+/// A host name or IPv4 text in a manifest's `network` list: letters, digits,
+/// `.` and `-`, starting and ending with a letter or digit. Deliberately
+/// stricter than the SMTP relay's host check (`wordpress_smtp_relay`), which
+/// also accepts IPv6 literals and so allows `:`, `[` and `]`; an agent's
+/// network entry is a name only.
 fn valid_host(host: &str) -> bool {
     let bytes = host.as_bytes();
     let edge = |b: u8| b.is_ascii_alphanumeric();
