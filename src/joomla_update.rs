@@ -366,7 +366,11 @@ fn plain_version(value: &str) -> bool {
 }
 
 fn major(version: &str) -> Option<u32> {
-    version.split('.').next()?.parse().ok()
+    let first = version.split('.').next()?;
+    if first.is_empty() || !first.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    first.parse().ok()
 }
 
 /// The MySQL/MariaDB connection `configuration.php` names. The host must be
@@ -1309,7 +1313,8 @@ mod tests {
             ("007.1", Some(7)),
             ("4294967295.0", Some(4_294_967_295)),
             ("4294967296.0", None),
-            ("+5.1", Some(5)),
+            ("+5.1", None),
+            ("5+1.2", None),
             ("-1.2", None),
             (" 5.1", None),
             ("x", None),
