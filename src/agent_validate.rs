@@ -574,21 +574,14 @@ fn valid_config_key(key: &str) -> bool {
     )
 }
 
-/// A host name or IPv4 text in a manifest's `network` list: letters, digits,
-/// `.` and `-`, starting and ending with a letter or digit. Deliberately
-/// stricter than the SMTP relay's host check (`wordpress_smtp_relay`), which
-/// also accepts IPv6 literals and so allows `:`, `[` and `]`; an agent's
-/// network entry is a name only.
+/// A host name or IPv4 text in a manifest's `network` list: a DNS name
+/// (non-empty labels of letters, digits and inner `-`, at most 63 bytes each,
+/// 253 in total) or a dotted-quad IPv4 address. Stricter than the SMTP relay's
+/// host check (`wordpress_smtp_relay`), which also accepts IPv6 literals; an
+/// agent's network entry is a name only. The list is validated and recorded
+/// but not written into a command or config by the engine.
 fn valid_host(host: &str) -> bool {
-    let bytes = host.as_bytes();
-    let edge = |b: u8| b.is_ascii_alphanumeric();
-    !bytes.is_empty()
-        && bytes.len() <= 253
-        && edge(bytes[0])
-        && edge(bytes[bytes.len() - 1])
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    crate::host_name::is_dns_name_or_ipv4(host)
 }
 
 fn is_word(byte: u8) -> bool {
@@ -829,15 +822,24 @@ mod tests {
             "example.com",
             "a-b.c",
             "1.2.3.4",
-            "a..b",
-            "a.-.b",
             "UPPER.example",
+            "localhost",
         ] {
             assert!(valid_host(accepted), "{accepted:?}");
         }
-        assert!(valid_host(&"a".repeat(253)));
-        assert!(!valid_host(&"a".repeat(254)));
+        // A label is at most 63 bytes, the whole name at most 253.
+        assert!(valid_host(&"a".repeat(63)));
+        assert!(!valid_host(&"a".repeat(64)));
+        let name_253 = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(61));
+        assert!(valid_host(&name_253));
+        assert!(!valid_host(&format!("{name_253}a")));
         for rejected in [
+            "a..b",
+            "a.-.b",
+            "a.-b",
+            "a-.b",
+            "999.1.1.1",
+            "1.2.3.4.5",
             "",
             ".",
             "-",
@@ -876,6 +878,7 @@ mod tests {
         }
         for c in (0u8..=127).map(char::from) {
             let middle = format!("a{c}a");
+            // `a.a` and `a-a` are names; the other separators are not.
             let expected = c.is_ascii_alphanumeric() || c == '.' || c == '-';
             assert_eq!(valid_host(&middle), expected, "{middle:?}");
             let edge = c.is_ascii_alphanumeric();
