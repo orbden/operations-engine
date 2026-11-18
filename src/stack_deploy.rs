@@ -2035,6 +2035,66 @@ exit 2
         )));
     }
 
+    // Characterisation of the `.env` line grammar this module understands. It
+    // is deliberately narrower than `util::update_env_atomic`, which matches a
+    // literal `KEY=` prefix: here leading whitespace is allowed before a key.
+    #[test]
+    fn env_line_grammar_is_pinned() {
+        assert_eq!(env_line_key("A=1"), Some("A"));
+        assert_eq!(env_line_key("   A=1"), Some("A"));
+        assert_eq!(env_line_key("A="), Some("A"));
+        assert_eq!(env_line_key("A=b=c"), Some("A"));
+        assert_eq!(env_line_key("A = 1"), Some("A "));
+        assert_eq!(env_line_key("export A=1"), Some("export A"));
+        assert_eq!(env_line_key("# A=1"), None);
+        assert_eq!(env_line_key("  # A=1"), None);
+        assert_eq!(env_line_key(""), None);
+        assert_eq!(env_line_key("   "), None);
+        assert_eq!(env_line_key("NOEQUALS"), None);
+
+        assert_eq!(unquote_env_value("'a b'"), "a b");
+        assert_eq!(unquote_env_value("\"a b\""), "a b");
+        assert_eq!(unquote_env_value("''"), "");
+        assert_eq!(unquote_env_value("'"), "'");
+        assert_eq!(unquote_env_value("'a\""), "'a\"");
+        assert_eq!(unquote_env_value("a=b"), "a=b");
+        assert_eq!(unquote_env_value(""), "");
+
+        assert_eq!(env_value("A=1\nA='2'\n", "A"), Some("2"));
+        assert_eq!(env_value("A=\n", "A"), Some(""));
+        assert_eq!(env_value("A='x=y'\n", "A"), Some("x=y"));
+        assert_eq!(env_value("B=1\n", "A"), None);
+        // `lines()` drops the CR of a CRLF ending.
+        assert_eq!(env_value("A=1\r\n", "A"), Some("1"));
+    }
+
+    #[test]
+    fn env_file_validity_is_pinned() {
+        assert!(env_file_is_valid(""));
+        assert!(env_file_is_valid("# c\n\nA=1\n  B='x=y'\n_C=\n"));
+        assert!(!env_file_is_valid("A=1\r\n"));
+        assert!(!env_file_is_valid("A=1\nNOEQUALS\n"));
+        assert!(!env_file_is_valid("1A=1\n"));
+        assert!(!env_file_is_valid("A B=1\n"));
+        assert!(!env_file_is_valid("export A=1\n"));
+        assert!(!env_file_is_valid("A-B=1\n"));
+        // A NUL inside a value is not this function's concern.
+        assert!(env_file_is_valid("A=\0\n"));
+    }
+
+    #[test]
+    fn merge_with_duplicates_and_empty_values_is_pinned() {
+        // Every existing line of a duplicated key takes the last incoming line.
+        assert_eq!(
+            merge_env_file("A=1\nA=2\n", "A='3'\nA='4'\n"),
+            "A='4'\nA='4'\n"
+        );
+        // An existing empty value still counts as set, so it is not re-added.
+        assert_eq!(merge_env_file("A=\n", "A='1'\n"), "A='1'\n");
+        assert_eq!(merge_env_file("", "A='1'\n# c\n"), "A='1'\n");
+        assert_eq!(merge_env_file("# keep\nB=1\n", ""), "# keep\nB=1\n");
+    }
+
     // ── .env merge and secret ownership (milestone 047) ──────────────────
 
     #[test]

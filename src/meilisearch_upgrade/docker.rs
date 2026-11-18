@@ -612,40 +612,7 @@ fn private_network(
 }
 
 fn update_env_atomic(path: &Path, updates: &[(&str, &str)]) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
-        return Err(std::io::Error::other("compose env is not a regular file"));
-    }
-    let original = fs::read_to_string(path)?;
-    let mut lines = original.lines().map(str::to_owned).collect::<Vec<_>>();
-    for (key, value) in updates {
-        if value.contains(['\r', '\n', '\0']) {
-            return Err(std::io::Error::other("invalid env pointer"));
-        }
-        let prefix = format!("{key}=");
-        if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
-            *line = format!("{key}={value}");
-        } else {
-            lines.push(format!("{key}={value}"));
-        }
-    }
-    let content = format!("{}\n", lines.join("\n"));
-    let temporary = path.with_extension("env.meilisearch.tmp");
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    {
-        use std::io::Write;
-        let mut file = options.open(&temporary)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-    }
-    fs::set_permissions(&temporary, metadata.permissions())?;
-    fs::rename(temporary, path)
+    crate::util::update_env_atomic(path, updates, "env.meilisearch.tmp")
 }
 
 #[cfg(test)]

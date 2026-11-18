@@ -1,7 +1,11 @@
 //! Small helpers shared by several operations.
 
 use sha2::{Digest, Sha256};
-use std::io::{self, Read};
+use std::{
+    fs,
+    io::{self, Read},
+    path::Path,
+};
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
@@ -121,6 +125,57 @@ pub fn charset_ok(
 ) -> bool {
     let mut bytes = value.bytes();
     value.len() <= max && bytes.next().is_some_and(first) && bytes.all(rest)
+}
+
+/// Sets `KEY=value` lines in a Compose `.env` file and replaces it atomically
+/// (a private temporary file next to it, `fsync`, original permissions, rename).
+///
+/// A line is replaced when it starts with `KEY=` (the first such line only);
+/// otherwise the line is appended. Nothing else is parsed: quotes, comments,
+/// `export` prefixes and other lines stay byte for byte, except that line
+/// endings are normalised to `\n` and the file ends with one. A value holding
+/// CR, LF or NUL is refused before anything is written. The path must be a
+/// regular file, not a symlink. `temp_extension` names the temporary file
+/// (`path.with_extension(..)`).
+pub fn update_env_atomic(
+    path: &Path,
+    updates: &[(&str, &str)],
+    temp_extension: &str,
+) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::other("compose env is not a regular file"));
+    }
+    let original = fs::read_to_string(path)?;
+    let mut lines = original.lines().map(str::to_owned).collect::<Vec<_>>();
+    for (key, value) in updates {
+        if value.contains(['\r', '\n', '\0']) {
+            return Err(io::Error::other("invalid env pointer"));
+        }
+        let prefix = format!("{key}=");
+        if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
+            *line = format!("{key}={value}");
+        } else {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let content = format!("{}\n", lines.join("\n"));
+    let temporary = path.with_extension(temp_extension);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    {
+        use std::io::Write;
+        let mut file = options.open(&temporary)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::set_permissions(&temporary, metadata.permissions())?;
+    fs::rename(temporary, path)
 }
 
 #[cfg(test)]
@@ -358,5 +413,118 @@ mod tests {
             }
         }
         assert!(read_bounded(Failing, 8).is_err());
+    }
+
+    fn env_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    fn env_update(content: &str, updates: &[(&str, &str)]) -> String {
+        let (_dir, path) = env_fixture(content);
+        update_env_atomic(&path, updates, "env.test.tmp").unwrap();
+        fs::read_to_string(&path).unwrap()
+    }
+
+    #[test]
+    fn env_update_replaces_only_the_first_matching_line() {
+        assert_eq!(
+            env_update("A=1\nB=2\nA=3\n", &[("A", "9")]),
+            "A=9\nB=2\nA=3\n"
+        );
+    }
+
+    #[test]
+    fn env_update_appends_missing_keys_and_adds_a_final_newline() {
+        assert_eq!(env_update("A=1", &[("B", "2")]), "A=1\nB=2\n");
+        assert_eq!(env_update("", &[("B", "2")]), "B=2\n");
+        assert_eq!(
+            env_update("A=1\n", &[("B", "2"), ("C", "3")]),
+            "A=1\nB=2\nC=3\n"
+        );
+    }
+
+    #[test]
+    fn env_update_matches_the_key_prefix_exactly() {
+        assert_eq!(
+            env_update("AB=1\n A=2\nexport A=3\n#A=4\nA_=5\n", &[("A", "9")]),
+            "AB=1\n A=2\nexport A=3\n#A=4\nA_=5\nA=9\n"
+        );
+    }
+
+    #[test]
+    fn env_update_leaves_quotes_comments_and_other_values_verbatim() {
+        let original = "# header\nP='a=b'\nQ=\"x y\"\nEMPTY=\n\nK=old\n";
+        assert_eq!(
+            env_update(original, &[("K", "new=1 # not a comment")]),
+            "# header\nP='a=b'\nQ=\"x y\"\nEMPTY=\n\nK=new=1 # not a comment\n"
+        );
+        assert_eq!(env_update(original, &[("EMPTY", "")]), original);
+    }
+
+    #[test]
+    fn env_update_writes_the_value_without_quoting_it() {
+        assert_eq!(env_update("K=1\n", &[("K", "'q'")]), "K='q'\n");
+    }
+
+    #[test]
+    fn env_update_normalises_crlf_line_endings() {
+        assert_eq!(env_update("A=1\r\nB=2\r\n", &[("B", "3")]), "A=1\nB=3\n");
+    }
+
+    #[test]
+    fn env_update_refuses_values_with_cr_lf_or_nul_and_writes_nothing() {
+        for bad in ["a\rb", "a\nb", "a\0b"] {
+            let (dir, path) = env_fixture("A=1\n");
+            let error =
+                update_env_atomic(&path, &[("B", "ok"), ("A", bad)], "env.test.tmp").unwrap_err();
+            assert_eq!(error.to_string(), "invalid env pointer");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "A=1\n");
+            assert!(!dir.path().join(".env.env.test.tmp").exists());
+        }
+    }
+
+    #[test]
+    fn env_update_duplicate_updates_apply_in_order() {
+        assert_eq!(env_update("A=1\n", &[("A", "2"), ("A", "3")]), "A=3\n");
+        assert_eq!(env_update("", &[("A", "2"), ("A", "3")]), "A=3\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_update_keeps_the_mode_and_leaves_no_temporary_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, path) = env_fixture("A=1\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        update_env_atomic(&path, &[("A", "2")], "env.test.tmp").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_update_refuses_symlinks_and_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::write(&target, "A=1\n").unwrap();
+        let link = dir.path().join(".env");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = update_env_atomic(&link, &[("A", "2")], "env.test.tmp").unwrap_err();
+        assert_eq!(error.to_string(), "compose env is not a regular file");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "A=1\n");
+        assert!(update_env_atomic(&dir.path().join("none"), &[], "env.test.tmp").is_err());
+    }
+
+    #[test]
+    fn env_update_refuses_an_existing_temporary_file() {
+        let (dir, path) = env_fixture("A=1\n");
+        fs::write(dir.path().join(".env.env.test.tmp"), "stale").unwrap();
+        assert!(update_env_atomic(&path, &[("A", "2")], "env.test.tmp").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "A=1\n");
     }
 }
