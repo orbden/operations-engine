@@ -126,7 +126,10 @@ impl Request {
 }
 
 /// `1:11.4.5+maria~ubu2404`, `v1.53.3`, `18.1` -> numeric components.
-/// At least major and minor are required.
+/// At least major and minor are required. After the numbers only an apt
+/// revision may follow (`+...`, or `-` and a digit): a pre-release or other
+/// junk (`18.1rc1`, `18.1~rc1`, `18.1-beta`, a control character) is not
+/// provably a release, so it is unparseable and the caller reports unknown.
 pub fn parse_version(raw: &str) -> Option<Vec<u32>> {
     let raw = raw.trim();
     let raw = match raw.split_once(':') {
@@ -138,6 +141,16 @@ pub fn parse_version(raw: &str) -> Option<Vec<u32>> {
         .bytes()
         .position(|b| !(b.is_ascii_digit() || b == b'.'))
         .unwrap_or(raw.len());
+    let suffix = &raw.as_bytes()[end..];
+    let suffix_ok = match suffix {
+        [] => true,
+        [b'+', rest @ ..] => rest.iter().all(|b| b.is_ascii_graphic()),
+        [b'-', d, rest @ ..] => d.is_ascii_digit() && rest.iter().all(|b| b.is_ascii_graphic()),
+        _ => false,
+    };
+    if !suffix_ok {
+        return None;
+    }
     let parts: Option<Vec<u32>> = raw[..end]
         .trim_end_matches('.')
         .split('.')

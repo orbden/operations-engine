@@ -173,7 +173,9 @@ mod tests {
     fn valid_semver_table() {
         // Exactly three non-empty digit groups. Unlike
         // `agent_validate::parse_semver` there is no numeric range limit, so
-        // groups of any length are accepted.
+        // groups of any length are accepted. That is harmless: the value is only
+        // compared as a string with the running version and is digits and dots
+        // only, so it is never parsed to a number, put in a path or a command.
         for accepted in [
             "1.2.3",
             "0.0.0",
