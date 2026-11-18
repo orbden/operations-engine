@@ -15,7 +15,6 @@
 
 use std::{
     collections::BTreeSet,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -161,11 +160,7 @@ impl InputError {
 }
 
 fn read_bounded(path: &Path, max: u64) -> std::io::Result<Option<Vec<u8>>> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(max + 1)
-        .read_to_end(&mut bytes)?;
-    Ok((bytes.len() as u64 <= max).then_some(bytes))
+    crate::util::read_bounded(std::fs::File::open(path)?, max)
 }
 
 /// Reads the inputs and validates them.
@@ -1109,5 +1104,47 @@ mod tests {
                 .unwrap()
                 .contains("secret-token")
         );
+    }
+
+    #[test]
+    fn manifest_reading_is_bounded_and_refuses_non_regular_files() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.json");
+        assert!(read_bounded(&path, 4).is_err(), "missing file");
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(read_bounded(&path, 4).unwrap(), Some(Vec::new()));
+        std::fs::write(&path, b"abcd").unwrap();
+        assert_eq!(read_bounded(&path, 4).unwrap(), Some(b"abcd".to_vec()));
+        std::fs::write(&path, b"abcde").unwrap();
+        assert_eq!(read_bounded(&path, 4).unwrap(), None);
+
+        let big = dir.path().join("big.json");
+        std::fs::write(&big, vec![b' '; MAX_MANIFEST_BYTES as usize + 1]).unwrap();
+        assert!(matches!(
+            validate_paths(dir.path(), &big),
+            Err(InputError::ManifestTooLarge)
+        ));
+        let exact = dir.path().join("exact.json");
+        std::fs::write(&exact, vec![b' '; MAX_MANIFEST_BYTES as usize]).unwrap();
+        assert!(matches!(
+            validate_paths(dir.path(), &exact),
+            Err(InputError::ManifestNotJson)
+        ));
+        let link = dir.path().join("link.json");
+        std::fs::write(&path, b"{}").unwrap();
+        symlink(&path, &link).unwrap();
+        assert!(matches!(
+            validate_paths(dir.path(), &link),
+            Err(InputError::ManifestUnreadable)
+        ));
+        assert!(matches!(
+            validate_paths(dir.path(), &dir.path().join("none.json")),
+            Err(InputError::ManifestUnreadable)
+        ));
+        assert!(matches!(
+            validate_paths(dir.path(), dir.path()),
+            Err(InputError::ManifestUnreadable)
+        ));
     }
 }
