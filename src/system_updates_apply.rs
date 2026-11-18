@@ -303,9 +303,7 @@ fn simulate(
             SubprocessDiagnostics::from_output(ctx.apt_get_program, &output),
         ));
     }
-    Ok(parse_simulation(&String::from_utf8_lossy(
-        &output.stdout.bytes,
-    )))
+    Ok(parse_simulation(&output.stdout.text()))
 }
 
 /// Refuses anything but upgrades of packages `system.updatesStatus` lists.

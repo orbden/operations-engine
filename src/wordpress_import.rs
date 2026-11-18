@@ -289,14 +289,14 @@ fn perform(
             wp_args(req, &["import", &container_path, "--authors=create"]),
             cancel,
         )?;
-        let (bytes, truncated) = if output.stdout.bytes.is_empty() {
-            (output.stderr.bytes, output.stderr.truncated)
+        let shown = if output.stdout.bytes.is_empty() {
+            &output.stderr
         } else {
-            (output.stdout.bytes, output.stdout.truncated)
+            &output.stdout
         };
         Ok(ImportResult {
-            output: String::from_utf8_lossy(&bytes).into_owned(),
-            output_truncated: truncated,
+            output: shown.text().into_owned(),
+            output_truncated: shown.truncated,
         })
     })();
     let _ = run(
