@@ -471,7 +471,7 @@ fn target_version(
     if !exited_ok(&output) {
         return Err(Error::UpdateCheckFailed);
     }
-    let text = String::from_utf8_lossy(&output.stdout.bytes).into_owned();
+    let text = output.stdout.text().into_owned();
     match parse_offer(&text) {
         Some(Offer::Version(target)) => {
             if major(&target).is_none() || major(&target) != major(installed) {

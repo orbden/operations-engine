@@ -236,7 +236,7 @@ fn succeeded(output: &ProcessOutput) -> bool {
 
 /// A held apt/dpkg lock is a conflict the caller can retry, not a failure.
 fn lock_held(output: &ProcessOutput) -> bool {
-    let text = String::from_utf8_lossy(&output.stderr.bytes);
+    let text = output.stderr.text();
     text.contains("Could not get lock")
         || text.contains("Unable to acquire the dpkg frontend lock")
         || text.contains("Unable to lock directory")

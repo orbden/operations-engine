@@ -351,7 +351,7 @@ mod tests {
             output.termination,
             ProcessTermination::Exited { success: true, .. }
         ));
-        let stdout = String::from_utf8_lossy(&output.stdout.bytes);
+        let stdout = output.stdout.text();
         assert_eq!(
             stdout.trim(),
             format!(
@@ -374,10 +374,7 @@ mod tests {
         )
         .expect("fake docker should run");
 
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout.bytes).trim(),
-            canonical.to_string_lossy()
-        );
+        assert_eq!(output.stdout.text().trim(), canonical.to_string_lossy());
     }
 
     #[test]
