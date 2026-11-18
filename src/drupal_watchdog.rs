@@ -983,6 +983,75 @@ mod tests {
         );
     }
 
+    /// Real-looking secrets from Drupal logs: none of the secret text may
+    /// survive, whatever form it takes.
+    #[test]
+    fn realistic_secrets_never_survive_redaction() {
+        let cases = [
+            (
+                "PDOException: SQLSTATE[HY000] [1045] Access denied, password=Tr0ub4dor&3xyz",
+                "Tr0ub4dor&3xyz",
+            ),
+            ("Login failed pwd=s3cr3tP4ss! for admin", "s3cr3tP4ss"),
+            (
+                "Mail send failed token=tok_4eC39HqLyjWDarjtT1zdp7dc",
+                "tok_4eC39HqLyjWDarjtT1zdp7dc",
+            ),
+            (
+                "curl -H Authorization: Bearer abc123def456 failed",
+                "abc123def456",
+            ),
+            (
+                "Authorization: Basic dXNlcjpwYXNzd29yZA== sent",
+                "dXNlcjpwYXNzd29yZA",
+            ),
+            (
+                "connect mysql://drupal:Pa55w0rd@db.internal:3306/drupal failed",
+                "Pa55w0rd",
+            ),
+            ("redis://:hunter2@cache.internal:6379/0 refused", "hunter2"),
+            (
+                "GET /cb?access_token=ya29.a0AfH6SMBx&state=1 denied",
+                "ya29.a0AfH6SMBx",
+            ),
+            (
+                "webhook https://hooks.example.com/services/T0/B0/abc?x=1",
+                "?x=1",
+            ),
+            (
+                "key ghp_16C7e42F292c6912E7710c838347Ae178B4a used",
+                "ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+            ),
+            ("aws AKIAIOSFODNN7EXAMPLE used", "AKIAIOSFODNN7EXAMPLE"),
+            ("Cookie: SESS0123456789=abcdef", "abcdef"),
+            (
+                "client_secret: 8f14e45fceea167a5a36dedd4bea2543 rejected",
+                "8f14e45fceea167a5a36dedd4bea2543",
+            ),
+            ("session_id=abc123 expired", "abc123"),
+        ];
+        for (input, secret) in cases {
+            let out = redacted(input);
+            assert!(
+                !out.contains(secret),
+                "{input:?} leaked {secret:?}: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_keeps_harmless_context() {
+        assert_eq!(
+            redacted("Access denied for user drupal at /admin/config"),
+            "Access denied for user drupal at /admin/config"
+        );
+        assert_eq!(
+            redacted("mysql://drupal:Pa55w0rd@db.internal:3306/drupal"),
+            "mysql://db.internal:3306/drupal"
+        );
+        assert_eq!(redacted("password=hunter2"), "password=[redacted]");
+    }
+
     #[test]
     fn long_messages_are_cut_on_characters() {
         let (short, cut) = redact_message("ok");

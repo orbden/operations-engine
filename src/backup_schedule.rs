@@ -577,6 +577,61 @@ mod tests {
     }
 
     #[test]
+    fn redact_legacy_handles_realistic_passwords() {
+        // Passwords as the panel generated them: random, with quotes (written
+        // as '\''), spaces, `#`, `$`, backslashes and shell metacharacters.
+        let passwords = [
+            "Zq8Wm3xK9vLp2RtY7nBc",
+            "p'\\''w # x",
+            "a\\'\\''b",
+            "$(touch /tmp/x);`id`|&",
+            "back\\slash'\\''end",
+            "",
+        ];
+        for password in passwords {
+            let mariadb = format!(
+                "0 2 * * * docker exec 'db-1' mariadb-dump -uroot -p'{password}' --single-transaction 'wp' > /root/b.sql # [db-backup] mariadb:wp"
+            );
+            let out = redact_legacy(&mariadb);
+            assert_eq!(
+                out,
+                "0 2 * * * docker exec 'db-1' mariadb-dump -uroot -p'[redacted]' --single-transaction 'wp' > /root/b.sql # [db-backup] mariadb:wp",
+                "{password:?}"
+            );
+            let postgres = format!(
+                "0 3 * * * docker exec -e PGPASSWORD='{password}' 'pg' pg_dump -U postgres 'app' # [db-backup] postgres:app"
+            );
+            assert_eq!(
+                redact_legacy(&postgres),
+                "0 3 * * * docker exec -e PGPASSWORD='[redacted]' 'pg' pg_dump -U postgres 'app' # [db-backup] postgres:app",
+                "{password:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_legacy_redacts_every_occurrence_and_leaves_other_lines_alone() {
+        let two = "a PGPASSWORD='one' b PGPASSWORD='t'\\''wo' c";
+        assert_eq!(
+            redact_legacy(two),
+            "a PGPASSWORD='[redacted]' b PGPASSWORD='[redacted]' c"
+        );
+        let both = "mariadb-dump -uroot -p'x' && PGPASSWORD='y' z";
+        assert_eq!(
+            redact_legacy(both),
+            "mariadb-dump -uroot -p'[redacted]' && PGPASSWORD='[redacted]' z"
+        );
+        let plain = "0 4 * * * /usr/bin/true --token=abc # note";
+        assert_eq!(redact_legacy(plain), plain);
+        assert_eq!(redact_legacy(""), "");
+        // An unterminated value is cut to the end, escape sequence included.
+        assert_eq!(
+            redact_legacy("x PGPASSWORD='ab'\\''cd"),
+            "x PGPASSWORD='[redacted]"
+        );
+    }
+
+    #[test]
     fn unterminated_secret_is_redacted_to_the_end() {
         let redacted = redact_legacy("x mariadb-dump -uroot -p'broken # [db-backup] mariadb:a");
         assert!(!redacted.contains("broken"));
