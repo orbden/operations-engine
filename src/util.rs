@@ -66,6 +66,14 @@ pub fn random_alnum_from(len: usize, mut source: impl Read) -> io::Result<String
     Ok(out)
 }
 
+/// `value` as a PHP single-quoted string literal: backslash and single quote are escaped,
+/// everything else (including `$`, double quotes and non-ASCII text) is literal in PHP.
+///
+/// Not an SQL or shell escaper: SQL literals and POSIX shell words follow different rules.
+pub fn php_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +155,20 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
+    }
+
+    #[test]
+    fn php_single_quote_escapes_only_backslash_and_quote() {
+        assert_eq!(php_single_quote(""), "''");
+        assert_eq!(php_single_quote("plain"), "'plain'");
+        assert_eq!(php_single_quote("it's"), r"'it\'s'");
+        assert_eq!(php_single_quote(r"a\b"), r"'a\\b'");
+        assert_eq!(php_single_quote(r"\'"), r"'\\\''");
+        assert_eq!(php_single_quote("'"), r"'\''");
+        assert_eq!(php_single_quote("$x \"q\" %s"), "'$x \"q\" %s'");
+        assert_eq!(
+            php_single_quote("pä\u{20ac}\u{1f600}'"),
+            "'pä\u{20ac}\u{1f600}\\''"
+        );
     }
 }

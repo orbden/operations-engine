@@ -28,6 +28,7 @@ use crate::{
         resource_lock,
         state::{self, TransactionStatus},
     },
+    util::php_single_quote,
 };
 use serde::Deserialize;
 use std::{
@@ -230,10 +231,6 @@ fn php_string(raw: &str) -> Option<String> {
     Some(out)
 }
 
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
-}
-
 /// One value of the configuration, read from the text.
 pub(crate) fn read_string(text: &str, name: &'static str) -> Result<String, ConfigError> {
     let mut found = text.lines().filter_map(|line| {
@@ -272,14 +269,14 @@ fn move_path(value: &str, from: &std::path::Path, to: &std::path::Path) -> Optio
 fn rewrite_configuration(text: &str, rewrite: &Rewrite<'_>) -> Result<String, ConfigError> {
     // Name -> new raw value; each of these must exist exactly once.
     let mut required: Vec<(&'static str, String)> = vec![
-        ("db", quote(rewrite.db_name)),
-        ("user", quote(rewrite.db_user)),
-        ("password", quote(rewrite.db_password)),
-        ("host", quote(rewrite.db_host)),
-        ("secret", quote(rewrite.secret)),
+        ("db", php_single_quote(rewrite.db_name)),
+        ("user", php_single_quote(rewrite.db_user)),
+        ("password", php_single_quote(rewrite.db_password)),
+        ("host", php_single_quote(rewrite.db_host)),
+        ("secret", php_single_quote(rewrite.secret)),
     ];
     if rewrite.defaults.noindex {
-        required.push(("robots", quote("noindex, nofollow")));
+        required.push(("robots", php_single_quote("noindex, nofollow")));
     }
     if rewrite.defaults.block_mail {
         required.push(("mailonline", "false".to_owned()));
@@ -297,12 +294,12 @@ fn rewrite_configuration(text: &str, rewrite: &Rewrite<'_>) -> Result<String, Co
             name,
             current
                 .and_then(|v| move_path(&v, rewrite.source_root, rewrite.staging_root))
-                .map(|v| quote(&v)),
+                .map(|v| php_single_quote(&v)),
         ));
     }
     // A non-empty `live_site` names the source's address; the copy detects its own.
     let live = match read_string(text, "live_site") {
-        Ok(value) if !value.is_empty() => Some(quote("")),
+        Ok(value) if !value.is_empty() => Some(php_single_quote("")),
         Ok(_) => None,
         Err(ConfigError::Property(_)) if !text.contains("public $live_site ") => None,
         Err(error) => return Err(error),
