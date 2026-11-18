@@ -59,6 +59,7 @@ pub mod engine;
 pub mod error;
 pub mod failpoint;
 pub mod filesystem;
+mod host_name;
 pub mod ingress;
 pub mod joomla_cache;
 pub mod joomla_clone;

@@ -119,18 +119,24 @@ fn valid_text(value: &str, max_len: usize) -> bool {
     value.len() <= max_len && !value.chars().any(char::is_control)
 }
 
-/// A DNS name or an IPv4/IPv6 literal: no whitespace, quotes or anything a
-/// PHP string or mail transport would treat specially. Deliberately looser
-/// than the agent manifest's `valid_host` (`agent_validate`): `:`, `[` and
-/// `]` are allowed for IPv6 literals and there is no rule about the first and
-/// last character. The value is passed on as JSON data (`constants`),
-/// not as part of a command line.
+/// The SMTP server name: a DNS name or IPv4 address (see
+/// `host_name::is_dns_name_or_ipv4`), or an IPv6 literal, bracketed
+/// (`[::1]`) or bare (`::1`), that parses as `Ipv6Addr`. The port is its own
+/// field, so `host:port` is refused: PHPMailer would read a port out of the
+/// host text and override `WPMS_SMTP_PORT`. The value is passed on as JSON
+/// data (`constants`), not as part of a command line.
 fn valid_host(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 253
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+    if value.len() > 253 {
+        return false;
+    }
+    let literal = value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(value);
+    if literal.contains(':') {
+        return literal.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    !value.contains(['[', ']']) && crate::host_name::is_dns_name_or_ipv4(value)
 }
 
 impl Request {
@@ -573,32 +579,28 @@ exit 0
 
     #[test]
     fn valid_host_pins_the_relay_host_grammar() {
-        // Deliberately looser than the agent manifest's host check: a relay
-        // host may be an IPv6 literal (`::1`, `[::1]`), so `:`, `[` and `]`
-        // are allowed, and there is no rule about the first and last
-        // character. Whitespace, quotes, `;`, `/`, `\`, NUL and anything
-        // non-ASCII are refused.
+        // A DNS name, an IPv4 address, or an IPv6 literal (bare or in
+        // brackets). No port (it is a separate field), no stray separators.
         for accepted in [
             "smtp.example.com",
             "a",
+            "localhost",
             "1.2.3.4",
+            "10.0.0.1",
             "[::1]",
             "::1",
             "2001:db8::1",
             "[2001:db8::1]",
             "fe80::1",
-            "-",
-            ".",
-            ":",
-            "[",
-            "]",
-            "a..b",
-            "-a-",
-            "a:587",
+            "::ffff:1.2.3.4",
         ] {
             assert!(valid_host(accepted), "{accepted:?}");
         }
-        assert!(valid_host(&"a".repeat(253)));
+        assert!(valid_host(&format!(
+            "{0}.{0}.{0}.{1}",
+            "a".repeat(63),
+            "a".repeat(61)
+        )));
         assert!(!valid_host(&"a".repeat(254)));
         for rejected in [
             "",
@@ -609,6 +611,7 @@ exit 0
             "a\n",
             "\na",
             "a\0",
+            "a\0b",
             "a/b",
             "a\\b",
             "a;b",
@@ -630,19 +633,36 @@ exit 0
             "a\u{200b}",
             "https://a",
             "a/../b",
+            // Previously accepted, now refused.
+            "-",
+            ".",
+            ":",
+            ":::",
+            "[",
+            "]",
+            "]]",
+            "[]",
+            "a..b",
+            ".a",
+            "a.",
+            "-a",
+            "a-",
+            "-a-",
+            "a:",
+            ":a",
+            "a:587",
+            "a:99999",
+            "a:0",
+            "[a]",
+            "[::1",
+            "::1]",
+            "[[::1]]",
+            "[1.2.3.4]",
+            "[::1]:587",
+            "1:2:3:4:5:6:7:8:9",
+            "999.1.1.1",
         ] {
             assert!(!valid_host(rejected), "{rejected:?}");
-        }
-        for c in (0u8..=127).map(char::from) {
-            let expected = c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']');
-            for probe in [
-                format!("a{c}a"),
-                format!("{c}a"),
-                format!("a{c}"),
-                c.to_string(),
-            ] {
-                assert_eq!(valid_host(&probe), expected, "{probe:?}");
-            }
         }
     }
 
