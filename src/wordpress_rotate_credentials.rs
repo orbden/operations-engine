@@ -201,11 +201,9 @@ fn sql_string(value: &str) -> String {
 }
 
 fn valid_db_user(user: &str) -> bool {
-    !user.is_empty()
-        && user.len() <= 80
-        && user
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | '%'))
+    let allowed =
+        |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'@' | b'%');
+    crate::util::charset_ok(user, 80, allowed, allowed)
         && !matches!(
             user.to_ascii_lowercase().as_str(),
             "root" | "mysql" | "mariadb.sys" | "healthcheck"
@@ -514,6 +512,41 @@ mod tests {
     use super::*;
     use crate::site::TrustedRoot;
     use std::{fs, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn valid_db_user_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_db_user",
+            valid_db_user,
+            80,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.@%",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.@%",
+        );
+        for reserved in [
+            "root",
+            "ROOT",
+            "Root",
+            "mysql",
+            "MySQL",
+            "mariadb.sys",
+            "MariaDB.SYS",
+            "healthcheck",
+            "HealthCheck",
+        ] {
+            assert!(!valid_db_user(reserved), "{reserved:?}");
+        }
+        for accepted in [
+            "rooty",
+            "xroot",
+            "root@localhost",
+            "my_sql",
+            "mysql1",
+            "health-check",
+            "a@%",
+        ] {
+            assert!(valid_db_user(accepted), "{accepted:?}");
+        }
+    }
 
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 

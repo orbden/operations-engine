@@ -566,12 +566,12 @@ fn check_lists(table: &serde_json::Map<String, Value>, problems: &mut Vec<Findin
 }
 
 fn valid_config_key(key: &str) -> bool {
-    let mut bytes = key.bytes();
-    key.len() <= 64
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    crate::util::charset_ok(
+        key,
+        64,
+        |b| b.is_ascii_alphabetic() || b == b'_',
+        |b| b.is_ascii_alphanumeric() || b == b'_',
+    )
 }
 
 fn valid_host(host: &str) -> bool {
@@ -811,6 +811,17 @@ fn check_script(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn valid_config_key_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_config_key",
+            valid_config_key,
+            64,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+        );
+    }
 
     const LOCK: &str = "exec 9>\"$WCP_DIR/agents/demo.lock\"\nflock -n 9 || exit 0\n";
 

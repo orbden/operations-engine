@@ -109,12 +109,95 @@ pub fn read_bounded(reader: impl Read, max: u64) -> io::Result<Option<Vec<u8>>> 
     Ok((bytes.len() as u64 <= max).then_some(bytes))
 }
 
+/// Whether `value` is non-empty, at most `max` bytes long, starts with a byte
+/// accepted by `first` and continues with bytes accepted by `rest`. Any
+/// non-ASCII character fails unless a predicate accepts its bytes, which the
+/// ASCII predicates in use never do.
+pub fn charset_ok(
+    value: &str,
+    max: usize,
+    first: impl Fn(u8) -> bool,
+    rest: impl Fn(u8) -> bool,
+) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= max && bytes.next().is_some_and(first) && bytes.all(rest)
+}
+
+#[cfg(test)]
+pub mod testing {
+    /// Pins the accept/reject behaviour of a name validator: `first` are the
+    /// characters allowed at position 0, `rest` those allowed after it, `max`
+    /// the longest accepted length in bytes; the empty string is rejected.
+    /// Every ASCII character (control characters, NUL, newline, quotes, `/`,
+    /// space included) is probed alone, first, in the middle and last, and a
+    /// set of non-ASCII strings is probed in each position.
+    pub fn pin_charset(
+        name: &str,
+        accepts: impl Fn(&str) -> bool,
+        max: usize,
+        first: &str,
+        rest: &str,
+    ) {
+        let fill_first = first.chars().next().unwrap();
+        let fill_rest = rest.chars().next().unwrap();
+        let check = |input: &str, expected: bool| {
+            assert_eq!(
+                accepts(input),
+                expected,
+                "{name}({input:?}) should be {}",
+                if expected { "accepted" } else { "rejected" }
+            );
+        };
+        check("", false);
+        let longest = format!("{fill_first}{}", fill_rest.to_string().repeat(max - 1));
+        check(&longest, true);
+        check(&format!("{longest}{fill_rest}"), false);
+        check(&fill_first.to_string().repeat(max + 1), false);
+        for c in (0u8..=127).map(char::from) {
+            let in_first = first.contains(c);
+            let in_rest = rest.contains(c);
+            check(&c.to_string(), in_first);
+            check(&format!("{c}{fill_rest}"), in_first);
+            check(&format!("{fill_first}{c}{fill_rest}"), in_rest);
+            check(&format!("{fill_first}{c}"), in_rest);
+        }
+        for odd in [
+            "\u{e9}",
+            "\u{ff21}",
+            "\u{65e5}\u{672c}",
+            "\u{202e}",
+            "\u{1f600}",
+            "\u{a0}",
+            "\u{2028}",
+            "\u{0}\u{e9}",
+        ] {
+            check(odd, false);
+            check(&format!("{odd}{fill_rest}"), false);
+            check(&format!("{fill_first}{odd}{fill_rest}"), false);
+            check(&format!("{fill_first}{odd}"), false);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn charset_ok_checks_length_first_byte_and_the_rest() {
+        let digit = |b: u8| b.is_ascii_digit();
+        let alpha = |b: u8| b.is_ascii_alphabetic();
+        assert!(!charset_ok("", 4, digit, alpha));
+        assert!(charset_ok("1abc", 4, digit, alpha));
+        assert!(!charset_ok("1abcd", 4, digit, alpha));
+        assert!(!charset_ok("a1bc", 4, digit, alpha));
+        assert!(!charset_ok("1ab1", 4, digit, alpha));
+        assert!(charset_ok("1", 4, digit, alpha));
+        assert!(!charset_ok("1\u{e9}", 4, digit, alpha));
+    }
 
     #[test]
     fn hex_is_lowercase_two_digits_per_byte() {

@@ -152,12 +152,12 @@ fn plain_absolute_path(value: &str) -> Option<PathBuf> {
 }
 
 fn valid_channel(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_TYPE_LEN
-        && !value.starts_with(' ')
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'))
+    crate::util::charset_ok(
+        value,
+        MAX_TYPE_LEN,
+        |b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'),
+        |b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'_' | b'-'),
+    )
 }
 
 impl Request {
@@ -823,6 +823,17 @@ pub fn read(
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    #[test]
+    fn valid_channel_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_channel",
+            valid_channel,
+            64,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-",
+        );
+    }
 
     const PLAN: &str = r#"{"container":"runtime-1","projectRoot":"/var/www/site","documentRoot":"/var/www/site/web","uid":1000,"gid":1001}"#;
 

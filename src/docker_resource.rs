@@ -118,10 +118,12 @@ fn check_token(expected: Option<&str>, given: Option<&str>) -> Result<(), Reques
 /// A Docker network or volume name: an ASCII alphanumeric, then letters,
 /// digits, `_`, `.` or `-`, at most 128 bytes (what the panel always allowed).
 fn valid_name(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    (1..=128).contains(&value.len())
-        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
-        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    crate::util::charset_ok(
+        value,
+        128,
+        |b| b.is_ascii_alphanumeric(),
+        |b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -818,6 +820,17 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
     use std::{fs, os::unix::fs::PermissionsExt, sync::Mutex};
+    #[test]
+    fn valid_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_name",
+            valid_name,
+            128,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const ID2: &str = "123e4567-e89b-12d3-a456-426614174001";
     const ID3: &str = "123e4567-e89b-12d3-a456-426614174002";

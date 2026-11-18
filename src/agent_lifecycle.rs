@@ -97,12 +97,8 @@ pub struct Agent {
 
 /// Lowercase letters, digits and `-`, starting with a letter or digit.
 pub fn valid_agent_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    name.len() <= 64
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    let first = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    crate::util::charset_ok(name, 64, first, |b| first(b) || b == b'-')
 }
 
 impl Agent {
@@ -570,6 +566,17 @@ pub struct UnbanResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_agent_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_agent_name",
+            valid_agent_name,
+            64,
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            "abcdefghijklmnopqrstuvwxyz0123456789-",
+        );
+    }
 
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 

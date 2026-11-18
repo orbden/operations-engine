@@ -264,14 +264,8 @@ fn read_owned_by(path: &Path, required_uid: u32) -> Result<String, ConfigError> 
 }
 
 fn validate_site_user(value: &str) -> Result<(), ConfigError> {
-    if value.is_empty()
-        || value.len() > 32
-        || !value.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || (index > 0 && matches!(byte, b'_' | b'-'))
-        })
-    {
+    let first = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    if !crate::util::charset_ok(value, 32, first, |b| first(b) || matches!(b, b'_' | b'-')) {
         return Err(ConfigError::InvalidSiteUser);
     }
     Ok(())
@@ -314,6 +308,17 @@ impl From<ValidationError> for ConfigError {
 mod tests {
     use super::{ConfigError, EngineConfig, SiteManifest};
     use crate::site::SiteId;
+
+    #[test]
+    fn validate_site_user_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "validate_site_user",
+            |s| super::validate_site_user(s).is_ok(),
+            32,
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            "abcdefghijklmnopqrstuvwxyz0123456789_-",
+        );
+    }
 
     const SITE_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
