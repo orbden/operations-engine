@@ -1,7 +1,8 @@
+use crate::clock::unix_now_secs;
 use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -182,13 +183,6 @@ fn read_lock(root: &ManagedRoot, path: &SiteRelativePath) -> Result<ExistingLock
     let held_for =
         Duration::from_secs(unix_now_secs().saturating_sub(record.acquired_at_unix_secs));
     Ok(ExistingLock { record, held_for })
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

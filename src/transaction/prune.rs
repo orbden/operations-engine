@@ -11,7 +11,8 @@
 //! cap vs. leaving it be) is a real, separate design decision, not a prune
 //! loop like this one.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
+use std::time::Duration;
 
 use crate::{
     filesystem::ManagedRoot,
@@ -145,13 +146,6 @@ pub fn prune_orphaned_claims(root: &ManagedRoot, grace: Duration) {
             let _ = root.remove_file(&entry.path);
         }
     }
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

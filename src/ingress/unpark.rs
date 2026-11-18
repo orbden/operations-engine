@@ -28,6 +28,7 @@
 //! the live write that variant implies actually landed. See `execute`'s doc
 //! comment for the deletion condition itself.
 
+use crate::clock::unix_now_secs;
 use std::io;
 
 use crate::{
@@ -419,15 +420,6 @@ fn replay(ingress_state: &ManagedRoot, original: RequestId) -> Result<UnparkResu
             })
         }
     }
-}
-
-fn unix_now_secs() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(all(test, unix))]

@@ -33,6 +33,7 @@
 //! keeps the saved list if that is not possible). Lock, idempotency,
 //! transaction and audit as for the other CMS actions.
 
+use crate::clock::unix_now_secs;
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
     error::ErrorCode,
@@ -51,11 +52,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeSet,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 pub const OPERATION: &str = "cms.safeMode";
 
@@ -387,13 +384,6 @@ fn valid_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 // ---- WordPress ----------------------------------------------------------
@@ -764,7 +754,7 @@ fn run_joomla(
                 extensions: names,
                 ids: ids.clone(),
                 previous_maintenance: None,
-                saved_at_unix_secs: unix_now(),
+                saved_at_unix_secs: unix_now_secs(),
             };
             // The list is durable before the first plugin is touched.
             store_saved(scope, &saved)?;
@@ -894,7 +884,7 @@ fn run_wordpress(
                 extensions: active.clone(),
                 ids: Vec::new(),
                 previous_maintenance: None,
-                saved_at_unix_secs: unix_now(),
+                saved_at_unix_secs: unix_now_secs(),
             };
             // The list is durable before the first plugin is touched.
             store_saved(scope, &saved)?;
@@ -974,7 +964,7 @@ fn run_drupal(
                 extensions: modules,
                 ids: Vec::new(),
                 previous_maintenance: Some(previous),
-                saved_at_unix_secs: unix_now(),
+                saved_at_unix_secs: unix_now_secs(),
             };
             store_saved(scope, &saved)?;
             let set = if previous {
@@ -1062,7 +1052,7 @@ pub fn execute(
         extensions: ran.extensions,
         maintenance_mode: ran.maintenance_mode,
         saved_at_unix_secs: ran.saved_at,
-        completed_at_unix_secs: unix_now(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     state
         .mark_committed(serde_json::to_value(&public).unwrap())

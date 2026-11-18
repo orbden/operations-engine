@@ -20,6 +20,7 @@
 //! Users are persisted with `ACL SAVE` into the ACL file the image keeps on
 //! its data volume, so they survive a restart.
 
+use crate::clock::unix_now_secs;
 use crate::util::sha256_hex;
 use crate::{
     db_restore::ContainerName,
@@ -40,7 +41,6 @@ use crate::{
     valkey::ADMIN_CLI,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROVISION_OPERATION: &str = "db.provisionValkeySite";
 pub const REVOKE_OPERATION: &str = "db.revokeValkeySite";
@@ -249,13 +249,6 @@ impl Error {
             ),
         }
     }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 /// 32 alphanumeric characters from the kernel's random source.
@@ -599,7 +592,7 @@ pub fn provision(
         ProvisionPublic {
             username: req.username(),
             database,
-            completed_at_unix_secs: now_secs(),
+            completed_at_unix_secs: unix_now_secs(),
         },
         ProvisionSecret { password },
     );
@@ -638,7 +631,7 @@ pub fn flush(
     let result = FlushSiteResult {
         database,
         keys_removed,
-        completed_at_unix_secs: now_secs(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     if !commit(
         &mut begun,
@@ -697,7 +690,7 @@ pub fn revoke(
     let result = RevokeResult {
         revoked,
         keys_removed,
-        completed_at_unix_secs: now_secs(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     if !commit(
         &mut begun,
@@ -781,7 +774,7 @@ pub fn rename(
     let result = RenameResult {
         renamed,
         username: req.username(),
-        completed_at_unix_secs: now_secs(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     if !commit(
         &mut begun,

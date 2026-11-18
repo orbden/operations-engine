@@ -29,6 +29,7 @@
 //! and not restored. A bundle remembers its site, and `restoreUpdate` must
 //! name the same one.
 
+use crate::clock::unix_now_secs;
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
     drupal_action::{
@@ -51,11 +52,7 @@ use crate::{
     wordpress_migrate_export::sha256_file,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::BTreeMap, path::Path};
 
 pub const CORE: &str = "drupal.updateCore";
 pub const PACKAGES: &str = "drupal.updatePackages";
@@ -474,13 +471,6 @@ struct Manifest {
     site: Option<UpdateSite>,
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn rel(path: String) -> SiteRelativePath {
     SiteRelativePath::parse(path).unwrap()
 }
@@ -656,7 +646,7 @@ fn bundle(
         request_id: req.request_id.to_string(),
         project_root: req.root().display().to_string(),
         document_root: req.base.document_root_str(),
-        created_at_unix_secs: now(),
+        created_at_unix_secs: unix_now_secs(),
         previous_maintenance_mode: previous_maintenance,
         versions_before: versions_before.clone(),
         files_sha256,
@@ -979,7 +969,7 @@ fn run(
             versions_before: manifest.versions_before.clone(),
             versions_after: manifest.versions_before,
             site: manifest.site,
-            completed_at_unix_secs: now(),
+            completed_at_unix_secs: unix_now_secs(),
         });
     }
 
@@ -1056,7 +1046,7 @@ fn run(
                 versions_before: watched,
                 versions_after: after,
                 site,
-                completed_at_unix_secs: now(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         }
         Err(reason) => {
@@ -1073,7 +1063,7 @@ fn run(
                 versions_before: watched.clone(),
                 versions_after: watched,
                 site,
-                completed_at_unix_secs: now(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         }
     }

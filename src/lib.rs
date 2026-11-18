@@ -25,6 +25,7 @@ pub mod backup_recover;
 pub mod backup_schedule;
 pub mod backup_trigger;
 pub mod cli;
+pub mod clock;
 pub mod cms_cache;
 pub mod cms_maintenance;
 pub mod cms_safe_mode;

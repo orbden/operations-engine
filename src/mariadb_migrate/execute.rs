@@ -8,7 +8,7 @@
 //! failure after the freeze attempts a rollback before the transaction is
 //! recorded as failed. No volume is ever removed.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
 
 use crate::{
     error::ErrorCode,
@@ -271,7 +271,7 @@ pub fn execute<D: Driver>(
         target_volume: target.volume,
         databases: baseline.databases,
         tables: baseline.tables,
-        completed_at_unix_secs: now(),
+        completed_at_unix_secs: unix_now_secs(),
     };
     let _committed = pre_commit.commit();
     drop(lock);
@@ -362,13 +362,6 @@ fn state_path(id: RequestId) -> SiteRelativePath {
 
 fn audit_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("static path")
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

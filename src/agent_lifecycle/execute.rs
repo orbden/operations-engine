@@ -13,6 +13,7 @@ use super::{
     RemoveResult, UNBAN_OPERATION, UnbanRequest, UnbanResult, current_schedule, find, library,
     manifest_entry, manifest_with, tab_too_large, unban_event, with_agent, without_ban,
 };
+use crate::clock::unix_now_secs;
 use crate::{
     agent_systemd,
     backup_schedule::Schedule,
@@ -31,7 +32,7 @@ use crate::{
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// The cron user whose crontab holds agent lines.
 const CRON_USER: &str = "root";
@@ -131,13 +132,6 @@ impl Error {
             Self::Replayed { code, message } => (*code, message.clone()),
         }
     }
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 fn rel(path: &str) -> SiteRelativePath {
@@ -583,7 +577,7 @@ pub fn install(
                 .filter(|_| files_current)
                 .and_then(|entry| entry.get("installed_at"))
                 .and_then(|value| value.as_u64())
-                .unwrap_or_else(now);
+                .unwrap_or_else(unix_now_secs);
             let manifest = manifest_with(
                 previous_manifest_text,
                 agent.name,
@@ -725,7 +719,7 @@ pub fn remove(
                 removed,
                 removed_cron_lines: removed_lines as u32,
                 removed_systemd_units: units_present,
-                removed_at_unix_secs: now(),
+                removed_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -795,14 +789,15 @@ pub fn bruteforce_unban(
             };
             // A log line is history, not state: a failed append must not
             // turn a completed unban into an error.
-            let _ = ctx
-                .root
-                .append(&events_path, unban_event(request.ip, now()).as_bytes());
+            let _ = ctx.root.append(
+                &events_path,
+                unban_event(request.ip, unix_now_secs()).as_bytes(),
+            );
             Ok(UnbanResult {
                 ip: request.ip.to_string(),
                 removed_bans: removed as u32,
                 applied,
-                unbanned_at_unix_secs: now(),
+                unbanned_at_unix_secs: unix_now_secs(),
             })
         },
     )

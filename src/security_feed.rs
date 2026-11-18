@@ -25,10 +25,7 @@ use crate::{
     transaction::{RequestId, resource_lock},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::Path;
 
 pub const REFRESH: &str = "security.refresh";
 pub const STATUS: &str = "security.status";
@@ -199,11 +196,7 @@ fn parse_utc(value: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-pub fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
+pub use crate::clock::unix_now_secs_i64 as now_unix;
 
 // ---- fetching ---------------------------------------------------------------
 

@@ -17,12 +17,12 @@
 //! commits without touching the file (`changed: false`). A rollback is the
 //! same operation with the previous domain, which the result reports.
 
+use crate::clock::unix_now_secs;
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -345,13 +345,6 @@ fn transaction_path(request_id: RequestId) -> SiteRelativePath {
 
 fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

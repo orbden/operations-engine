@@ -17,11 +17,7 @@
 //! reports `stopped: false` instead, so a stale panel view cannot take a
 //! pool down under a live site.
 
-use std::{
-    io,
-    path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{io, path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 

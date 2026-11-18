@@ -36,11 +36,8 @@
 //! `PORT=`, `ROOT=`, `WORKER_MODE=`, `WORKER_COUNT=`, one per line, in
 //! `<runtime root>/<runtime id>/<domain>.identity`, mode `0644`.
 
-use std::{
-    fmt, fs, io,
-    path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use crate::clock::unix_now_secs;
+use std::{fmt, fs, io, path::Path, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -1225,13 +1222,6 @@ fn transaction_path(request_id: RequestId) -> SiteRelativePath {
 
 fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(all(test, unix))]

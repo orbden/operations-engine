@@ -45,6 +45,7 @@
 //!   only `{adminUserId, adminLogin, issuedAt, expiresAt}` is stored in the
 //!   transaction state and returned by an idempotent replay.
 
+use crate::clock::unix_now_secs;
 use crate::util::sha256_hex;
 use crate::{
     db_restore::{ContainerName, RestoreRequestError},
@@ -65,10 +66,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, time::Duration};
 
 pub const USERS_OPERATION: &str = "site.adminUsers";
 pub const LOGIN_OPERATION: &str = "site.adminLogin";
@@ -749,13 +747,6 @@ impl Error {
     }
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 /// 244 random bits as 64 lowercase hex characters (two v4 UUIDs).
 fn new_token() -> String {
     format!(
@@ -1118,7 +1109,7 @@ pub fn issue_login(
         return Err(abort(state, Error::Cancelled));
     }
 
-    let issued_at = now_secs();
+    let issued_at = unix_now_secs();
     let minted = match mint(ctx, req, issued_at, cancel) {
         Ok(value) => value,
         Err(error) => return Err(abort(state, error)),

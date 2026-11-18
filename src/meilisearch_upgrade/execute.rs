@@ -6,7 +6,7 @@
 //! exists, and every failure after source shutdown attempts rollback before the
 //! transaction is recorded as failed.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
 
 use crate::{
     error::ErrorCode,
@@ -304,7 +304,7 @@ pub fn execute<D: Driver>(
         ));
     }
 
-    let completed_at = now();
+    let completed_at = unix_now_secs();
     let recovery_expires_at = completed_at.saturating_add(RECOVERY_RETENTION_SECS);
     let result = UpgradeResult {
         source_version: baseline.source_version.clone(),
@@ -431,13 +431,6 @@ fn state_path(id: RequestId) -> SiteRelativePath {
 
 fn audit_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("static path")
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]

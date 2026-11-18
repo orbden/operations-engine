@@ -45,6 +45,7 @@
 //!   transaction (a retry with the same key runs). If the container is
 //!   already gone a replay of a recorded request still returns its outcome.
 
+use crate::clock::unix_now_secs;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -61,7 +62,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub const ACTION_OPERATION: &str = "docker.containerAction";
 pub const LIMITS_OPERATION: &str = "docker.setLimits";
@@ -567,13 +568,6 @@ fn open_scope(engine_state: &ManagedRoot) -> std::io::Result<ManagedRoot> {
     Ok(scope)
 }
 
-pub(crate) fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 /// Resolution, the stack lock, preflight and the transaction scaffolding
 /// common to both operations. `body` runs with the transaction `InProgress`.
 #[allow(clippy::too_many_arguments)]
@@ -665,7 +659,7 @@ pub fn execute_action(
                 action: req.action,
                 force: req.force,
                 managed: resolved.managed,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )
@@ -721,7 +715,7 @@ pub fn execute_limits(
                 managed: resolved.managed,
                 runtime_only: true,
                 raised_to_host_max: plan.raised_to_host_max,
-                completed_at_unix_secs: now_secs(),
+                completed_at_unix_secs: unix_now_secs(),
             })
         },
     )

@@ -21,7 +21,7 @@
 //! approximation shared with deploy's own retention behavior, not a new
 //! guarantee invented for rollback.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::clock::unix_now_secs;
 
 use crate::{
     config::SiteManifest,
@@ -363,11 +363,4 @@ fn state_path_for(request_id: RequestId) -> SiteRelativePath {
 
 fn audit_log_path() -> SiteRelativePath {
     SiteRelativePath::parse("audit/events.jsonl").expect("literal path is valid")
-}
-
-fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

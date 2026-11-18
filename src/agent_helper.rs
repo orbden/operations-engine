@@ -20,13 +20,13 @@
 pub mod config;
 mod result;
 
+use crate::clock::unix_now_secs;
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
@@ -89,12 +89,6 @@ pub fn state_dir() -> PathBuf {
 
 pub fn dry_run() -> bool {
     std::env::var("WCP_DRY_RUN").is_ok_and(|value| value == "1")
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn check_name(name: &str) -> Result<(), HelperError> {
@@ -361,7 +355,7 @@ pub fn run_in(dir: &Path, dry_run: bool, command: &AgentCommand) -> i32 {
                     json!({"agent": name, "exitCode": exit_code, "written": false, "dryRun": true})
                 })
             } else {
-                write_heartbeat(dir, name, *exit_code, now()).map(|path| {
+                write_heartbeat(dir, name, *exit_code, unix_now_secs()).map(|path| {
                     json!({"agent": name, "exitCode": exit_code, "written": true,
                            "dryRun": false, "path": path})
                 })
@@ -464,7 +458,7 @@ fn result_outcome(
     check_name(name)?;
     result::check_max_lines(max_lines)?;
     let data = result::build_data(pairs, data_json)?;
-    let line = result::result_line(name, status, summary, &data, now())?;
+    let line = result::result_line(name, status, summary, &data, unix_now_secs())?;
     let parsed = serde_json::from_str::<Value>(&line).unwrap_or(Value::Null);
     if dry_run {
         return Ok(json!({"agent": name, "written": false, "dryRun": true, "line": parsed}));
@@ -630,7 +624,7 @@ fn log_outcome(
     } else {
         message.join(" ")
     };
-    let line = log_line(name, level, &text, now());
+    let line = log_line(name, level, &text, unix_now_secs());
     if dry_run {
         return Ok(json!({"agent": name, "written": false, "dryRun": true,
                          "line": serde_json::from_str::<Value>(&line).unwrap_or(Value::Null)}));

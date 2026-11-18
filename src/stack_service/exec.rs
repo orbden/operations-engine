@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use crate::clock::unix_now_secs;
 
 pub(crate) fn compose(
     ctx: &Context<'_>,
@@ -170,11 +171,4 @@ pub(super) fn transaction_path(request_id: RequestId) -> SiteRelativePath {
 
 pub(super) fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-pub(super) fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

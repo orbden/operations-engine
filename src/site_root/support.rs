@@ -1,4 +1,5 @@
 use super::*;
+pub(crate) use crate::clock::unix_now_secs;
 
 /// A real directory (not a symlink to one) named `domain` directly under
 /// `root`.
@@ -87,11 +88,4 @@ pub(super) fn transaction_path(request_id: RequestId) -> SiteRelativePath {
 
 pub(crate) fn rel(path: &str) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("literal path is valid")
-}
-
-pub(crate) fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }

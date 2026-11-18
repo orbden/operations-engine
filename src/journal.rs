@@ -41,7 +41,7 @@
 use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -476,12 +476,7 @@ fn rel(path: impl AsRef<std::path::Path>) -> SiteRelativePath {
     SiteRelativePath::parse(path).expect("journal paths are fixed and valid")
 }
 
-pub fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+pub use crate::clock::unix_now_secs;
 
 fn rotated_name(last_seq: u64) -> String {
     format!("{ROTATED_PREFIX}{last_seq:020}{ROTATED_SUFFIX}")

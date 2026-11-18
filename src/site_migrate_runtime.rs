@@ -38,6 +38,7 @@
 //! lock is not held across the whole sequence (`stack.deploy` can run between
 //! two steps), and one migration per domain is serialised by the scope lock.
 
+use crate::clock::unix_now_secs;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -369,12 +370,6 @@ fn open_scope(engine_state: &ManagedRoot, domain: &Domain) -> std::io::Result<Ma
         scope.create_dir_all(&rel(child))?;
     }
     Ok(scope)
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 fn sha(content: &str) -> ConfigHash {
@@ -808,7 +803,7 @@ fn run(
         to_runtime_id: req.target.to_string(),
         port: target_identity.port,
         warnings,
-        completed_at_unix_secs: unix_now(),
+        completed_at_unix_secs: unix_now_secs(),
     })
 }
 
@@ -975,7 +970,7 @@ pub fn recover(
                     to_runtime_id: journal.to_runtime.clone(),
                     port: 0,
                     warnings,
-                    completed_at_unix_secs: unix_now(),
+                    completed_at_unix_secs: unix_now_secs(),
                 };
                 let _ = t.mark_committed(
                     serde_json::to_value(result).expect("results always serialize"),
