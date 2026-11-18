@@ -22,17 +22,16 @@
 //! hold a full database dump, so the panel discards them as soon as they are
 //! transferred, and also after a failed migration.
 
-use crate::util::hex;
+use crate::util::sha256_reader;
 use std::{
     fs,
-    io::{self, Read},
+    io::{self},
     os::unix::fs::FileTypeExt,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     db_restore::{ContainerName, DatabaseName},
@@ -589,19 +588,7 @@ pub(crate) fn artifact_info(export_dir: &Path, file: &str) -> Result<ArtifactInf
 }
 
 pub fn sha256_file(path: &Path) -> io::Result<(u64, String)> {
-    let mut file = fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0u8; 1024 * 1024];
-    let mut total = 0u64;
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-        total += read as u64;
-    }
-    Ok((total, hex(&digest.finalize())))
+    sha256_reader(fs::File::open(path)?)
 }
 
 fn wp_read(
