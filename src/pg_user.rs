@@ -77,11 +77,8 @@ impl Request {
 }
 
 fn valid_user(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    crate::util::charset_ok(value, 63, allowed, allowed)
 }
 
 #[derive(Deserialize)]
@@ -155,7 +152,7 @@ mod tests {
     fn valid_user_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_user",
-            |s| valid_user(s),
+            valid_user,
             63,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",

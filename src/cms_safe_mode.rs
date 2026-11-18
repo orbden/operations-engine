@@ -377,13 +377,14 @@ fn checked(
 /// A plugin slug or module machine name; it becomes one argv element, so
 /// anything that could be read as an option or a path escape is refused.
 fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 200
-        && !name.starts_with(['-', '.', '/'])
+    !name.starts_with(['-', '.', '/'])
         && !name.contains("..")
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+        && crate::util::charset_ok(
+            name,
+            200,
+            |b| b.is_ascii_alphanumeric() || b == b'_',
+            |b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'),
+        )
 }
 
 // ---- WordPress ----------------------------------------------------------
@@ -1120,7 +1121,7 @@ mod tests {
     fn valid_name_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_name",
-            |s| valid_name(s),
+            valid_name,
             200,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./",

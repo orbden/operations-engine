@@ -82,6 +82,20 @@ pub fn read_bounded(reader: impl Read, max: u64) -> io::Result<Option<Vec<u8>>> 
     Ok((bytes.len() as u64 <= max).then_some(bytes))
 }
 
+/// Whether `value` is non-empty, at most `max` bytes long, starts with a byte
+/// accepted by `first` and continues with bytes accepted by `rest`. Any
+/// non-ASCII character fails unless a predicate accepts its bytes, which the
+/// ASCII predicates in use never do.
+pub fn charset_ok(
+    value: &str,
+    max: usize,
+    first: impl Fn(u8) -> bool,
+    rest: impl Fn(u8) -> bool,
+) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= max && bytes.next().is_some_and(first) && bytes.all(rest)
+}
+
 #[cfg(test)]
 pub mod testing {
     /// Pins the accept/reject behaviour of a name validator: `first` are the

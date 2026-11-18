@@ -246,11 +246,8 @@ fn canonical_ip(raw: &str) -> Option<String> {
 }
 
 fn valid_username(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 32
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-');
+    crate::util::charset_ok(name, 32, allowed, allowed)
 }
 
 /// A bcrypt hash as `caddy hash-password` prints it.
@@ -505,7 +502,7 @@ mod tests {
     fn valid_username_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_username",
-            |s| super::valid_username(s),
+            super::valid_username,
             32,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",

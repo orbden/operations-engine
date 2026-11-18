@@ -407,7 +407,7 @@ pub struct HostFacts<'a> {
 const MAX_REQUIREMENTS: usize = 32;
 
 fn valid_requirement(name: &str, max_len: usize, allow: fn(u8) -> bool) -> bool {
-    !name.is_empty() && name.len() <= max_len && name.bytes().all(allow)
+    crate::util::charset_ok(name, max_len, allow, allow)
 }
 
 /// Checks `requires_ops`, `requires_helpers` and `requires_tools` against the
@@ -626,7 +626,6 @@ pub fn fetch_verified(
 #[cfg(test)]
 mod tests {
     #[test]
-    #[test]
     fn valid_requirement_pins_length_and_the_given_character_predicate() {
         let ops: fn(u8) -> bool = |b| b.is_ascii_alphanumeric() || b == b'.';
         let names: fn(u8) -> bool = |b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
@@ -654,6 +653,7 @@ mod tests {
         assert!(!valid_requirement("A", 32, names));
     }
 
+    #[test]
     fn unapprove_matches_only_the_named_agent_and_hash() {
         let a = "a".repeat(64);
         let b = "b".repeat(64);

@@ -75,11 +75,8 @@ pub enum RequestError {
 }
 
 fn valid_table_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_TABLE_NAME
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    crate::util::charset_ok(name, MAX_TABLE_NAME, allowed, allowed)
 }
 
 impl Request {
@@ -500,7 +497,7 @@ mod tests {
     fn valid_table_name_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_table_name",
-            |s| valid_table_name(s),
+            valid_table_name,
             64,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",

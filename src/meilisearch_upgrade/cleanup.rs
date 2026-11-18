@@ -87,11 +87,8 @@ pub fn cleanup_expired_now<D: Driver>(root: &ManagedRoot, driver: &mut D) -> Cle
 }
 
 fn valid_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 255
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    crate::util::charset_ok(value, 255, allowed, allowed)
 }
 
 fn path(value: &str) -> SiteRelativePath {
@@ -110,7 +107,7 @@ mod tests {
     fn cleanup_valid_name_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "cleanup_valid_name",
-            |s| valid_name(s),
+            valid_name,
             255,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",

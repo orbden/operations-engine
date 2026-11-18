@@ -264,14 +264,8 @@ fn read_owned_by(path: &Path, required_uid: u32) -> Result<String, ConfigError> 
 }
 
 fn validate_site_user(value: &str) -> Result<(), ConfigError> {
-    if value.is_empty()
-        || value.len() > 32
-        || !value.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || (index > 0 && matches!(byte, b'_' | b'-'))
-        })
-    {
+    let first = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    if !crate::util::charset_ok(value, 32, first, |b| first(b) || matches!(b, b'_' | b'-')) {
         return Err(ConfigError::InvalidSiteUser);
     }
     Ok(())

@@ -153,11 +153,8 @@ impl UpgradeRequest {
 }
 
 fn valid_index_uid(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 400
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_');
+    crate::util::charset_ok(value, 400, allowed, allowed)
 }
 
 fn valid_semver(value: &str) -> bool {
@@ -176,7 +173,7 @@ mod tests {
     fn valid_index_uid_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_index_uid",
-            |s| valid_index_uid(s),
+            valid_index_uid,
             400,
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
