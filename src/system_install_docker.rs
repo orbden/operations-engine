@@ -349,9 +349,7 @@ fn run_checked(
             SubprocessDiagnostics::from_output(program, &output),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout.bytes)
-        .trim()
-        .to_owned())
+    Ok(output.stdout.text().trim().to_owned())
 }
 
 fn apt(
@@ -525,7 +523,7 @@ fn inspect(ctx: &Context<'_>, cancel: &CancellationToken) -> Result<Inventory, E
             SubprocessDiagnostics::from_output(ctx.tools.dpkg_query, &output),
         ));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout.bytes);
+    let stdout = output.stdout.text();
 
     let cli_present = package_state(&stdout, "docker-ce-cli") != PackageState::Absent;
     let mut foreign: Vec<String> = FOREIGN_PACKAGES

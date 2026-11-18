@@ -393,7 +393,7 @@ fn container_id(c: &RestoreContext<'_>, r: &RestoreRequest) -> Result<String, Er
         &CancellationToken::default(),
     )
     .map_err(|_| Error::RecoveryRequired)?;
-    let id = String::from_utf8_lossy(&out.stdout.bytes).trim().to_owned();
+    let id = out.stdout.text().trim().to_owned();
     if !succeeded(&out)
         || out.stdout.truncated
         || id.len() != 64
@@ -473,9 +473,7 @@ fn verify(c: &RestoreContext<'_>, r: &RestoreRequest, cancel: &CancellationToken
     };
     succeeded(&output)
         && !output.stdout.truncated
-        && String::from_utf8_lossy(&output.stdout.bytes)
-            .lines()
-            .any(|line| line.trim() == "1")
+        && output.stdout.text().lines().any(|line| line.trim() == "1")
 }
 pub(super) fn read_pending(scope: &ManagedRoot) -> Result<Option<Pending>, Error> {
     let f = match scope.open_regular_read(&marker()) {

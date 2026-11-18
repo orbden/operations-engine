@@ -166,7 +166,7 @@ fn probe_version(binary: &Path, argument: &str, skip_words: usize) -> Option<Str
     .ok()?;
     match output.termination {
         ProcessTermination::Exited { success: true, .. } => {
-            version_in(&String::from_utf8_lossy(&output.stdout.bytes), skip_words)
+            version_in(&output.stdout.text(), skip_words)
         }
         _ => None,
     }

@@ -511,14 +511,10 @@ fn lookup(
     )
     .map_err(|e| Error::Run(Stage::Lookup, e))?;
     match output.termination {
-        ProcessTermination::Exited { success: true, .. } => Ok(Some(
-            String::from_utf8_lossy(&output.stdout.bytes).into_owned(),
-        )),
-        ProcessTermination::Exited { .. }
-            if is_missing(&String::from_utf8_lossy(&output.stderr.bytes)) =>
-        {
-            Ok(None)
+        ProcessTermination::Exited { success: true, .. } => {
+            Ok(Some(output.stdout.text().into_owned()))
         }
+        ProcessTermination::Exited { .. } if is_missing(&output.stderr.text()) => Ok(None),
         _ => Err(Error::Rejected(
             Stage::Lookup,
             SubprocessDiagnostics::from_output(ctx.docker_program, &output),
@@ -664,7 +660,7 @@ pub fn execute_pull(
                     SubprocessDiagnostics::from_output(ctx.docker_program, &output),
                 ));
             }
-            let text = String::from_utf8_lossy(&output.stdout.bytes);
+            let text = output.stdout.text();
             let (tail, truncated) = tail_of(&text, PULL_OUTPUT_LIMIT);
             Ok(PullResult {
                 reference: req.reference.as_str().to_owned(),

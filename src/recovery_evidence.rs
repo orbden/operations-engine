@@ -19,7 +19,7 @@ pub fn container_id(docker: &str, name: &str) -> io::Result<String> {
         &CancellationToken::default(),
     )
     .map_err(|_| io::Error::other("container identity unavailable"))?;
-    let id = String::from_utf8_lossy(&out.stdout.bytes).trim().to_owned();
+    let id = out.stdout.text().trim().to_owned();
     if !matches!(
         out.termination,
         ProcessTermination::Exited { success: true, .. }

@@ -39,6 +39,33 @@ pub fn sha256_reader(mut reader: impl Read) -> io::Result<(u64, String)> {
     Ok((total, hex(&digest.finalize())))
 }
 
+/// The 62-character alphabet of generated secrets.
+const ALNUM: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/// `len` alphanumeric characters from the kernel's random source (`/dev/urandom`).
+pub fn random_alnum(len: usize) -> io::Result<String> {
+    random_alnum_from(len, std::fs::File::open("/dev/urandom")?)
+}
+
+/// [`random_alnum`] over any byte source. Bytes are read a buffer at a time; a
+/// byte of 248 or more is dropped (248 = 62 * 4) so every character is equally
+/// likely, and more bytes are read until `len` characters are collected. A
+/// short or failed read is an error.
+pub fn random_alnum_from(len: usize, mut source: impl Read) -> io::Result<String> {
+    let mut out = String::with_capacity(len);
+    let mut buffer = vec![0u8; len];
+    while out.len() < len {
+        let need = len - out.len();
+        source.read_exact(&mut buffer[..need])?;
+        for &byte in &buffer[..need] {
+            if byte < 248 {
+                out.push(ALNUM[usize::from(byte) % ALNUM.len()] as char);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `value` as a PHP single-quoted string literal: backslash and single quote are escaped,
 /// everything else (including `$`, double quotes and non-ASCII text) is literal in PHP.
 ///
@@ -206,6 +233,46 @@ mod tests {
             }
         }
         assert!(sha256_reader(Failing).is_err());
+    }
+
+    #[test]
+    fn random_alnum_maps_bytes_to_the_alphabet_and_drops_248_and_up() {
+        let bytes = [0u8, 25, 26, 51, 52, 61, 62, 247, 248, 255, 124, 186];
+        // 248 and 255 are dropped; 62 wraps to 'a', 247 % 62 = 61 -> '9'.
+        assert_eq!(random_alnum_from(10, &bytes[..]).unwrap(), "azAZ09a9aa");
+    }
+
+    #[test]
+    fn random_alnum_reads_more_when_bytes_are_rejected() {
+        let mut bytes = vec![255u8; 5];
+        bytes.extend([1, 2, 3]);
+        assert_eq!(random_alnum_from(3, &bytes[..]).unwrap(), "bcd");
+    }
+
+    #[test]
+    fn random_alnum_fails_on_a_short_source() {
+        let error = random_alnum_from(4, &[1u8, 2][..]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        // Everything rejected, then the source runs dry.
+        assert!(random_alnum_from(4, &[255u8; 4][..]).is_err());
+    }
+
+    #[test]
+    fn random_alnum_of_zero_reads_nothing() {
+        assert_eq!(random_alnum_from(0, io::empty()).unwrap(), "");
+    }
+
+    #[test]
+    fn random_alnum_has_the_requested_length_alphabet_and_is_not_repeated() {
+        for len in [1, 32, 64, 300] {
+            let a = random_alnum(len).unwrap();
+            let b = random_alnum(len).unwrap();
+            assert_eq!(a.len(), len);
+            assert!(a.bytes().all(|c| c.is_ascii_alphanumeric()));
+            if len >= 32 {
+                assert_ne!(a, b);
+            }
+        }
     }
 
     #[test]

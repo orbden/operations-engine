@@ -76,7 +76,9 @@ fn run_id(
         )));
     }
 
-    String::from_utf8_lossy(&output.stdout.bytes)
+    output
+        .stdout
+        .text()
         .trim()
         .parse()
         .map_err(|_| IdentityError::Parse)
@@ -231,9 +233,7 @@ fn verify_head(
         .run_as(identity.uid, identity.gid);
     let output = run(&request, &limits, cancellation).map_err(Error::Verify)?;
 
-    let head = String::from_utf8_lossy(&output.stdout.bytes)
-        .trim()
-        .to_owned();
+    let head = output.stdout.text().trim().to_owned();
     if head == revision.as_str() {
         Ok(())
     } else {
