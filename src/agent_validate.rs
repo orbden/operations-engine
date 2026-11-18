@@ -812,6 +812,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn valid_config_key_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_config_key",
+            |s| valid_config_key(s),
+            64,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+        );
+    }
+
     const LOCK: &str = "exec 9>\"$WCP_DIR/agents/demo.lock\"\nflock -n 9 || exit 0\n";
 
     fn script(version: &str) -> String {

@@ -106,6 +106,17 @@ mod tests {
         transaction::RequestId,
     };
 
+    #[test]
+    fn cleanup_valid_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "cleanup_valid_name",
+            |s| valid_name(s),
+            255,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",
+        );
+    }
+
     #[derive(Default)]
     struct Fake {
         active: String,

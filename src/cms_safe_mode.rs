@@ -1116,6 +1116,35 @@ mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+    #[test]
+    fn valid_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_name",
+            |s| valid_name(s),
+            200,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./",
+        );
+        for accepted in [
+            "a.b",
+            "plugins/x",
+            "a//b",
+            "a-",
+            "a.",
+            "a/",
+            "a_b/c.d-e",
+            "_a",
+        ] {
+            assert!(valid_name(accepted), "{accepted:?}");
+        }
+        for rejected in [
+            ".", "..", "-", "/", "./a", "../a", "a..b", "a/../b", "a/..", "a..", "-a", ".a", "/a",
+            "a b", "a\n", "a\0b",
+        ] {
+            assert!(!valid_name(rejected), "{rejected:?}");
+        }
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
     fn id(n: u32) -> String {

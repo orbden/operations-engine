@@ -83,6 +83,62 @@ pub fn read_bounded(reader: impl Read, max: u64) -> io::Result<Option<Vec<u8>>> 
 }
 
 #[cfg(test)]
+pub mod testing {
+    /// Pins the accept/reject behaviour of a name validator: `first` are the
+    /// characters allowed at position 0, `rest` those allowed after it, `max`
+    /// the longest accepted length in bytes; the empty string is rejected.
+    /// Every ASCII character (control characters, NUL, newline, quotes, `/`,
+    /// space included) is probed alone, first, in the middle and last, and a
+    /// set of non-ASCII strings is probed in each position.
+    pub fn pin_charset(
+        name: &str,
+        accepts: impl Fn(&str) -> bool,
+        max: usize,
+        first: &str,
+        rest: &str,
+    ) {
+        let fill_first = first.chars().next().unwrap();
+        let fill_rest = rest.chars().next().unwrap();
+        let check = |input: &str, expected: bool| {
+            assert_eq!(
+                accepts(input),
+                expected,
+                "{name}({input:?}) should be {}",
+                if expected { "accepted" } else { "rejected" }
+            );
+        };
+        check("", false);
+        let longest = format!("{fill_first}{}", fill_rest.to_string().repeat(max - 1));
+        check(&longest, true);
+        check(&format!("{longest}{fill_rest}"), false);
+        check(&fill_first.to_string().repeat(max + 1), false);
+        for c in (0u8..=127).map(char::from) {
+            let in_first = first.contains(c);
+            let in_rest = rest.contains(c);
+            check(&c.to_string(), in_first);
+            check(&format!("{c}{fill_rest}"), in_first);
+            check(&format!("{fill_first}{c}{fill_rest}"), in_rest);
+            check(&format!("{fill_first}{c}"), in_rest);
+        }
+        for odd in [
+            "\u{e9}",
+            "\u{ff21}",
+            "\u{65e5}\u{672c}",
+            "\u{202e}",
+            "\u{1f600}",
+            "\u{a0}",
+            "\u{2028}",
+            "\u{0}\u{e9}",
+        ] {
+            check(odd, false);
+            check(&format!("{odd}{fill_rest}"), false);
+            check(&format!("{fill_first}{odd}{fill_rest}"), false);
+            check(&format!("{fill_first}{odd}"), false);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

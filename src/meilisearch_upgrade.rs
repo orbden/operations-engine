@@ -172,6 +172,17 @@ fn valid_semver(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn valid_index_uid_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_index_uid",
+            |s| valid_index_uid(s),
+            400,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
     fn plan(target: &str, key: &str) -> String {

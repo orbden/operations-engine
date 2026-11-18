@@ -626,6 +626,34 @@ pub fn fetch_verified(
 #[cfg(test)]
 mod tests {
     #[test]
+    #[test]
+    fn valid_requirement_pins_length_and_the_given_character_predicate() {
+        let ops: fn(u8) -> bool = |b| b.is_ascii_alphanumeric() || b == b'.';
+        let names: fn(u8) -> bool = |b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+        assert!(!valid_requirement("", 64, ops));
+        assert!(valid_requirement(&"a".repeat(64), 64, ops));
+        assert!(!valid_requirement(&"a".repeat(65), 64, ops));
+        assert!(valid_requirement(&"a".repeat(32), 32, names));
+        assert!(!valid_requirement(&"a".repeat(33), 32, names));
+        for c in (0u8..=127).map(char::from) {
+            let s = format!("a{c}b");
+            assert_eq!(valid_requirement(&s, 64, ops), ops(c as u8), "ops {s:?}");
+            assert_eq!(
+                valid_requirement(&s, 32, names),
+                names(c as u8),
+                "names {s:?}"
+            );
+            assert_eq!(valid_requirement(&c.to_string(), 8, ops), ops(c as u8));
+        }
+        for odd in ["\u{e9}", "a\u{e9}", "\u{ff21}", "\u{0}"] {
+            assert!(!valid_requirement(odd, 64, ops), "{odd:?}");
+            assert!(!valid_requirement(odd, 32, names), "{odd:?}");
+        }
+        assert!(valid_requirement(".", 64, ops));
+        assert!(valid_requirement("-", 32, names));
+        assert!(!valid_requirement("A", 32, names));
+    }
+
     fn unapprove_matches_only_the_named_agent_and_hash() {
         let a = "a".repeat(64);
         let b = "b".repeat(64);

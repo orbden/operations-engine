@@ -315,6 +315,17 @@ mod tests {
     use super::{ConfigError, EngineConfig, SiteManifest};
     use crate::site::SiteId;
 
+    #[test]
+    fn validate_site_user_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "validate_site_user",
+            |s| super::validate_site_user(s).is_ok(),
+            32,
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            "abcdefghijklmnopqrstuvwxyz0123456789_-",
+        );
+    }
+
     const SITE_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
     fn config_json() -> &'static str {

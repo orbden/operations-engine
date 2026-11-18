@@ -571,6 +571,17 @@ pub struct UnbanResult {
 mod tests {
     use super::*;
 
+    #[test]
+    fn valid_agent_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_agent_name",
+            |s| valid_agent_name(s),
+            64,
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+            "abcdefghijklmnopqrstuvwxyz0123456789-",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
     #[test]

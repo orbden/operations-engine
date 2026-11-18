@@ -824,6 +824,17 @@ mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+    #[test]
+    fn valid_channel_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_channel",
+            |s| valid_channel(s),
+            64,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-",
+        );
+    }
+
     const PLAN: &str = r#"{"container":"runtime-1","projectRoot":"/var/www/site","documentRoot":"/var/www/site/web","uid":1000,"gid":1001}"#;
 
     fn plan_with(extra: &str) -> String {

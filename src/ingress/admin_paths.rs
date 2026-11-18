@@ -501,6 +501,17 @@ mod tests {
         site::TrustedRoot,
     };
 
+    #[test]
+    fn valid_username_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_username",
+            |s| super::valid_username(s),
+            32,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const ID2: &str = "9b2f1c34-5678-4abc-9def-0123456789ab";
     const HASH: &str = "$2a$14$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890";

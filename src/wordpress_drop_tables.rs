@@ -496,6 +496,17 @@ mod tests {
     use super::*;
     use std::{fs, os::unix::fs::PermissionsExt};
 
+    #[test]
+    fn valid_table_name_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_table_name",
+            |s| valid_table_name(s),
+            64,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const ID2: &str = "123e4567-e89b-12d3-a456-426614174001";
 

@@ -151,6 +151,17 @@ pub struct DropResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn valid_user_pins_its_accepted_and_rejected_characters_and_length() {
+        crate::util::testing::pin_charset(
+            "valid_user",
+            |s| valid_user(s),
+            63,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+        );
+    }
+
     const ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     #[test]
     fn validates_role_and_secrets() {
