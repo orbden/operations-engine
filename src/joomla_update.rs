@@ -1206,6 +1206,44 @@ mod tests {
         )
     }
 
+    /// `read_text` is not interchangeable with the root-owned content reader:
+    /// it accepts any owner and mode, refuses symlinks by `symlink_metadata`
+    /// instead of `O_NOFOLLOW`, and reports every failure as `None`.
+    #[test]
+    fn read_text_pins_its_own_acceptance_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.xml");
+        std::fs::write(&file, "<x/>").unwrap();
+        assert_eq!(read_text(&file, 4).as_deref(), Some("<x/>"));
+        assert_eq!(read_text(&file, 3), None);
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(read_text(&file, 0).as_deref(), Some(""));
+        std::fs::write(&file, [0xff, 0xfe]).unwrap();
+        assert_eq!(read_text(&file, 16), None);
+        assert_eq!(read_text(&dir.path().join("missing"), 16), None);
+        assert_eq!(read_text(dir.path(), 1 << 20), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&file, "ok").unwrap();
+            let link = dir.path().join("link.xml");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert_eq!(read_text(&link, 16), None);
+            // Any mode is fine, including world-writable.
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
+            assert_eq!(read_text(&file, 16).as_deref(), Some("ok"));
+            let fifo = dir.path().join("fifo.xml");
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if made {
+                assert_eq!(read_text(&fifo, 16), None);
+            }
+        }
+    }
+
     #[test]
     fn requests_have_exactly_one_shape_per_kind() {
         assert!(Request::parse("update-core", &plan(""), ID, None).is_ok());
