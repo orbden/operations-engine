@@ -342,19 +342,7 @@ fn append_overrides(text: &str, o: &Overrides<'_>) -> Result<String, ConfigError
 
 /// A fresh salt from the kernel's random source (alphanumeric).
 fn new_salt() -> std::io::Result<String> {
-    use std::io::Read;
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut urandom = std::fs::File::open("/dev/urandom")?;
-    let mut out = String::with_capacity(SALT_LEN);
-    let mut byte = [0u8; 1];
-    while out.len() < SALT_LEN {
-        urandom.read_exact(&mut byte)?;
-        // 248 = 62 * 4: rejecting the rest keeps every character equally likely.
-        if byte[0] < 248 {
-            out.push(ALPHABET[usize::from(byte[0]) % ALPHABET.len()] as char);
-        }
-    }
-    Ok(out)
+    crate::util::random_alnum(SALT_LEN)
 }
 
 /// `base/relative` with no symlink in any component below `base`: a symlinked

@@ -304,3 +304,12 @@ fn revoke_drops_the_account_and_is_idempotent() {
     assert_eq!(fixture.read("argv.log").lines().count(), calls);
     assert!(!fixture.state_dump().contains("top-secret"));
 }
+
+#[test]
+fn a_password_is_32_alphanumeric_characters_and_not_repeated() {
+    let a = new_password().unwrap();
+    let b = new_password().unwrap();
+    assert_eq!(a.len(), PASSWORD_LEN);
+    assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
+    assert_ne!(a, b);
+}
