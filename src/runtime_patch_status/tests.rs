@@ -275,3 +275,53 @@ fn postgres_minor_releases_are_patches_of_the_major_line() {
     let row = one(PG, f, Some(cand(Some('c'), Some("19.0"))));
     assert_eq!(row.status, Status::MinorOrMajor);
 }
+
+#[test]
+fn parse_version_table() {
+    // The Debian/apt-style grammar: optional numeric epoch, optional `v`,
+    // two to four dot-separated numbers, anything after them ignored. It is
+    // not semver and stays separate from the strict `x.y.z` checks elsewhere.
+    for (raw, expected) in [
+        ("1:11.4.5+maria~ubu2404", Some(vec![11, 4, 5])),
+        ("v1.53.3", Some(vec![1, 53, 3])),
+        ("18.1", Some(vec![18, 1])),
+        ("1.2.3.4", Some(vec![1, 2, 3, 4])),
+        ("1.2.3.4.", Some(vec![1, 2, 3, 4])),
+        (" 18.1 ", Some(vec![18, 1])),
+        ("18.1\n", Some(vec![18, 1])),
+        ("18.1.", Some(vec![18, 1])),
+        ("18.1rc1", Some(vec![18, 1])),
+        ("18.1-beta", Some(vec![18, 1])),
+        ("18.1+x", Some(vec![18, 1])),
+        ("18.1~x", Some(vec![18, 1])),
+        ("01.02", Some(vec![1, 2])),
+        ("0.0", Some(vec![0, 0])),
+        ("4294967295.1", Some(vec![4_294_967_295, 1])),
+        (":18.1", Some(vec![18, 1])),
+        ("1:v2.3", Some(vec![2, 3])),
+        ("12:3.4", Some(vec![3, 4])),
+        ("4294967296.1", None),
+        ("1.2.3.4.5", None),
+        ("1.2.3.4.5.", None),
+        ("", None),
+        ("   ", None),
+        ("9", None),
+        ("9.", None),
+        ("latest", None),
+        ("x:18.1", None),
+        ("1:2:3.4", None),
+        ("vv18.1", None),
+        ("V18.1", None),
+        ("+1.2", None),
+        ("-1.2", None),
+        (".18.1", None),
+        ("18..1", None),
+        ("1 .2", None),
+        ("\u{ff11}.2", None),
+        ("1.\u{663}", None),
+        ("\0", None),
+        ("1.2\0", Some(vec![1, 2])),
+    ] {
+        assert_eq!(parse_version(raw), expected, "{raw:?}");
+    }
+}

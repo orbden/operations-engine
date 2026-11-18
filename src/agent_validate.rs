@@ -886,6 +886,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_semver_table() {
+        for (text, expected) in [
+            ("1.2.3", Some((1, 2, 3))),
+            ("0.0.0", Some((0, 0, 0))),
+            ("01.02.03", Some((1, 2, 3))),
+            ("10.20.30", Some((10, 20, 30))),
+            (
+                "18446744073709551615.0.0",
+                Some((18_446_744_073_709_551_615, 0, 0)),
+            ),
+            ("18446744073709551616.0.0", None),
+            ("0.0.18446744073709551616", None),
+            ("", None),
+            ("1", None),
+            ("1.2", None),
+            ("1.2.3.4", None),
+            ("1.2.", None),
+            (".1.2", None),
+            ("1..2", None),
+            ("1.2.3.", None),
+            ("+1.2.3", None),
+            ("-1.2.3", None),
+            (" 1.2.3", None),
+            ("1.2.3 ", None),
+            ("1.2.3\n", None),
+            ("1.2.3\0", None),
+            ("1.2.3-rc1", None),
+            ("1.2.3+build", None),
+            ("v1.2.3", None),
+            ("1.2.x", None),
+            ("1.2.3/..", None),
+            ("\u{ff11}.2.3", None),
+            ("1.2.\u{663}", None),
+        ] {
+            assert_eq!(parse_semver(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
     fn valid_config_key_pins_its_accepted_and_rejected_characters_and_length() {
         crate::util::testing::pin_charset(
             "valid_config_key",
