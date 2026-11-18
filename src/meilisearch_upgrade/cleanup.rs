@@ -117,10 +117,6 @@ pub(crate) fn valid_dump_uid(value: &str) -> bool {
     crate::util::charset_ok(value, 128, name_first_ok, rest)
 }
 
-fn path(value: &str) -> SiteRelativePath {
-    SiteRelativePath::parse(value).expect("static cleanup path")
-}
-
 /// Builds a path from manifest-derived text; `None` when it is not a plain
 /// relative path, so the manifest is skipped instead of panicking.
 fn try_path(value: &str) -> Option<SiteRelativePath> {
@@ -130,6 +126,10 @@ fn try_path(value: &str) -> Option<SiteRelativePath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn path(value: &str) -> SiteRelativePath {
+        SiteRelativePath::parse(value).expect("test path")
+    }
     use crate::{
         meilisearch_upgrade::execute::RECOVERY_RETENTION_SECS, site::TrustedRoot,
         transaction::RequestId,
