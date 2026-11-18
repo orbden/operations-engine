@@ -286,16 +286,8 @@ fn require_named_volume_safe_docker(
 
 fn bounded_output(stdout: &process::CapturedOutput) -> (String, bool) {
     let text = String::from_utf8_lossy(&stdout.bytes);
-    let mut truncated = stdout.truncated;
-    if text.len() <= MAX_OUTPUT_BYTES {
-        return (text.into_owned(), truncated);
-    }
-    truncated = true;
-    let mut end = MAX_OUTPUT_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_owned(), truncated)
+    let head = crate::util::truncate_utf8_head(&text, MAX_OUTPUT_BYTES);
+    (head.to_owned(), stdout.truncated || head.len() < text.len())
 }
 
 fn run_prune(
@@ -661,5 +653,37 @@ mod tests {
         assert_eq!(server_major("23.0.0-rc.1"), Some(23));
         assert_eq!(server_major("v27"), None);
         assert_eq!(server_major(""), None);
+    }
+
+    #[test]
+    fn bounded_output_cuts_the_head_at_a_character_boundary() {
+        let out = |text: &str, truncated: bool| {
+            bounded_output(&process::CapturedOutput {
+                bytes: text.as_bytes().to_vec(),
+                truncated,
+            })
+        };
+        assert_eq!(out("", false), (String::new(), false));
+        assert_eq!(out("", true), (String::new(), true));
+        let exact = "a".repeat(MAX_OUTPUT_BYTES);
+        assert_eq!(out(&exact, false), (exact.clone(), false));
+        assert_eq!(out(&exact, true), (exact.clone(), true));
+        let over = "a".repeat(MAX_OUTPUT_BYTES + 1);
+        assert_eq!(out(&over, false), (exact.clone(), true));
+        // Two-byte characters: the limit is even, so the cut falls between characters.
+        let wide = "я".repeat(MAX_OUTPUT_BYTES / 2 + 1);
+        assert_eq!(out(&wide, false), ("я".repeat(MAX_OUTPUT_BYTES / 2), true));
+        // An odd prefix puts the limit inside a character: the cut moves back.
+        let odd = format!("a{}", "я".repeat(MAX_OUTPUT_BYTES / 2));
+        let (text, truncated) = out(&odd, false);
+        assert!(truncated);
+        assert_eq!(text.len(), MAX_OUTPUT_BYTES - 1);
+        assert!(text.starts_with('a') && text.ends_with('я'));
+        // Invalid bytes become the replacement character before the cut.
+        let (text, truncated) = bounded_output(&process::CapturedOutput {
+            bytes: vec![0xff, b'x'],
+            truncated: false,
+        });
+        assert_eq!((text.as_str(), truncated), ("\u{fffd}x", false));
     }
 }

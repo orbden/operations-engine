@@ -74,6 +74,32 @@ pub fn php_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
+/// The first `max` bytes of `text`, shortened to the previous character boundary when the
+/// limit falls inside a multi-byte character. Text of at most `max` bytes is returned whole.
+pub fn truncate_utf8_head(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// The last `max` bytes of `text`, shortened to the next character boundary when the cut
+/// falls inside a multi-byte character. Text of at most `max` bytes is returned whole.
+pub fn truncate_utf8_tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +196,44 @@ mod tests {
             php_single_quote("pä\u{20ac}\u{1f600}'"),
             "'pä\u{20ac}\u{1f600}\\''"
         );
+    }
+
+    #[test]
+    fn truncate_head_never_splits_a_character() {
+        assert_eq!(truncate_utf8_head("", 0), "");
+        assert_eq!(truncate_utf8_head("", 4), "");
+        assert_eq!(truncate_utf8_head("abc", 3), "abc");
+        assert_eq!(truncate_utf8_head("abcd", 3), "abc");
+        assert_eq!(truncate_utf8_head("abc", 0), "");
+        assert_eq!(truncate_utf8_head("abc", 100), "abc");
+        // 2-byte (\u{439}), 3-byte (\u{20ac}) and 4-byte (\u{1f600}) characters.
+        assert_eq!(truncate_utf8_head("a\u{439}b", 2), "a");
+        assert_eq!(truncate_utf8_head("a\u{439}b", 3), "a\u{439}");
+        assert_eq!(truncate_utf8_head("\u{20ac}\u{20ac}", 5), "\u{20ac}");
+        for max in 0..4 {
+            assert_eq!(truncate_utf8_head("\u{1f600}x", max), "");
+        }
+        assert_eq!(truncate_utf8_head("\u{1f600}x", 4), "\u{1f600}");
+        assert_eq!(truncate_utf8_head("\u{1f600}x", 5), "\u{1f600}x");
+    }
+
+    #[test]
+    fn truncate_tail_never_splits_a_character() {
+        assert_eq!(truncate_utf8_tail("", 0), "");
+        assert_eq!(truncate_utf8_tail("", 4), "");
+        assert_eq!(truncate_utf8_tail("abc", 3), "abc");
+        assert_eq!(truncate_utf8_tail("abcd", 3), "bcd");
+        assert_eq!(truncate_utf8_tail("abc", 0), "");
+        assert_eq!(truncate_utf8_tail("abc", 100), "abc");
+        assert_eq!(truncate_utf8_tail("a\u{439}b", 2), "b");
+        assert_eq!(truncate_utf8_tail("a\u{439}b", 3), "\u{439}b");
+        assert_eq!(truncate_utf8_tail("\u{20ac}\u{20ac}", 5), "\u{20ac}");
+        for max in 0..4 {
+            let text = "x\u{1f600}";
+            let tail = truncate_utf8_tail(text, max);
+            assert!(tail.len() <= max);
+            assert!(text.ends_with(tail));
+        }
+        assert_eq!(truncate_utf8_tail("x\u{1f600}", 4), "\u{1f600}");
     }
 }
