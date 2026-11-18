@@ -86,9 +86,13 @@ pub fn cleanup_expired_now<D: Driver>(root: &ManagedRoot, driver: &mut D) -> Cle
     cleanup_expired(root, now, driver)
 }
 
+/// Docker volume names and dump uids as the engine writes them: they start
+/// with an ASCII alphanumeric, so `.`, `..`, `-flag` and `.hidden` are never
+/// accepted (defence in depth; see the module tests).
 fn valid_name(value: &str) -> bool {
-    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
-    crate::util::charset_ok(value, 255, allowed, allowed)
+    let first = |b: u8| b.is_ascii_alphanumeric();
+    let rest = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    crate::util::charset_ok(value, 255, first, rest)
 }
 
 fn path(value: &str) -> SiteRelativePath {
@@ -109,9 +113,82 @@ mod tests {
             "cleanup_valid_name",
             valid_name,
             255,
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.",
         );
+    }
+
+    #[test]
+    fn valid_name_rejects_dot_names_leading_dash_dot_and_separators() {
+        for bad in [
+            "", ".", "..", "-x", "-", ".x", "..x", "_x", "a/b", "/a", "a/", "../a", "a b", "a\\b",
+        ] {
+            assert!(!valid_name(bad), "{bad:?} must be rejected");
+        }
+        for good in [
+            "x",
+            "0",
+            "dump-1",
+            "20240101-120000123",
+            "wcp_meilisearch_data",
+            "wcp_meilisearch_1_29_abcdef012345",
+            "a.b",
+            "a..b",
+            "a-",
+            "a_.",
+        ] {
+            assert!(valid_name(good), "{good:?} must be accepted");
+        }
+        assert!(valid_name(&"a".repeat(255)));
+        assert!(!valid_name(&"a".repeat(256)));
+        assert!(!valid_name(&format!("-{}", "a".repeat(10))));
+    }
+
+    #[test]
+    fn manifest_with_dot_dot_names_deletes_and_touches_nothing() {
+        for (source, target, backup) in [
+            ("source-volume", "target-volume", ".."),
+            ("source-volume", "target-volume", "."),
+            ("source-volume", "target-volume", "-x"),
+            ("..", "target-volume", "dump-1"),
+            ("-f", "target-volume", "dump-1"),
+            ("source-volume", "..", "dump-1"),
+        ] {
+            let (_dir, root, mut artifact) = fixture();
+            artifact.source_volume = source.into();
+            artifact.target_volume = target.into();
+            artifact.backup_id = backup.into();
+            let manifest = path("artifacts/123e4567-e89b-12d3-a456-426614174000.json");
+            root.write_atomic(&manifest, &serde_json::to_vec(&artifact).unwrap())
+                .unwrap();
+            // Files a traversal could reach: the legitimate dump, a sibling
+            // of the request directory, and one beside the backups directory.
+            let sentinels = [
+                "backups/123e4567-e89b-12d3-a456-426614174000/dump-1.dump",
+                "backups/123e4567-e89b-12d3-a456-426614174000/...dump",
+                "backups/123e4567-e89b-12d3-a456-426614174000/..dump",
+                "backups/123e4567-e89b-12d3-a456-426614174000/-x.dump",
+                "backups/outside.dump",
+                "outside.dump",
+            ];
+            for sentinel in sentinels {
+                root.write_atomic(&path(sentinel), b"keep").unwrap();
+            }
+            let mut driver = Fake {
+                active: target.into(),
+                ..Fake::default()
+            };
+            let result = cleanup_expired(&root, artifact.expires_at_unix_secs, &mut driver);
+            assert_eq!(result.skipped_manifests, 1, "{source} {target} {backup}");
+            assert!(result.removed_backups.is_empty());
+            assert!(result.removed_source_volumes.is_empty());
+            assert!(driver.removed.is_empty());
+            assert!(root.exists(&manifest));
+            for sentinel in sentinels {
+                assert!(root.exists(&path(sentinel)), "{sentinel} was touched");
+                assert_eq!(root.read_to_string(&path(sentinel)).unwrap(), "keep");
+            }
+        }
     }
 
     #[derive(Default)]
