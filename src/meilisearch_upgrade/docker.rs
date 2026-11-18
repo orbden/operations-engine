@@ -275,11 +275,7 @@ impl crate::meilisearch_upgrade::cleanup::Driver for DockerDriver<'_> {
     }
 
     fn remove_volume(&mut self, volume: &str) -> Result<(), Self::Error> {
-        let filter = format!("name=^{volume}$");
-        let existing = self.docker(
-            ["volume", "ls", "--quiet", "--filter", filter.as_str()],
-            &CancellationToken::default(),
-        )?;
+        let existing = self.docker(volume_ls_args(volume), &CancellationToken::default())?;
         if !std::str::from_utf8(&existing)
             .map_err(|_| Error::InvalidInspect)?
             .lines()
@@ -290,6 +286,26 @@ impl crate::meilisearch_upgrade::cleanup::Driver for DockerDriver<'_> {
         self.docker(["volume", "rm", volume], &CancellationToken::default())?;
         Ok(())
     }
+}
+
+/// Arguments listing the volumes whose name is exactly `volume`. Docker
+/// treats the name filter as a regular expression, so metacharacters in the
+/// name are escaped; the caller still compares the output lines exactly.
+fn volume_ls_args(volume: &str) -> Vec<String> {
+    let mut escaped = String::with_capacity(volume.len() + 2);
+    escaped.push('^');
+    for character in volume.chars() {
+        if "\\.+*?()|[]{}^$".contains(character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('$');
+    ["volume", "ls", "--quiet", "--filter"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain([format!("name={escaped}")])
+        .collect()
 }
 
 impl Driver for DockerDriver<'_> {
@@ -326,12 +342,7 @@ impl Driver for DockerDriver<'_> {
         let dump_uid = self
             .client(source, &request.master_key)?
             .create_dump_and_wait(cancellation, DUMP_TIMEOUT)?;
-        if dump_uid.is_empty()
-            || dump_uid.len() > 128
-            || !dump_uid.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-            })
-        {
+        if !crate::meilisearch_upgrade::cleanup::valid_dump_uid(&dump_uid) {
             return Err(Error::InvalidDumpUid);
         }
         let relative = SiteRelativePath::parse(format!(
@@ -681,6 +692,22 @@ mod tests {
             inspect_source(json, "container123".into()),
             Err(Error::MissingPrivateNetwork)
         ));
+    }
+
+    #[test]
+    fn volume_filter_escapes_regex_metacharacters_and_stays_anchored() {
+        assert_eq!(
+            volume_ls_args("wcp_meili.data-1"),
+            [
+                "volume",
+                "ls",
+                "--quiet",
+                "--filter",
+                "name=^wcp_meili\\.data-1$"
+            ]
+        );
+        assert_eq!(volume_ls_args("a+b(c)")[4], "name=^a\\+b\\(c\\)$");
+        assert_eq!(volume_ls_args("plain")[4], "name=^plain$");
     }
 
     #[test]
