@@ -11,7 +11,7 @@ use crate::{
     static_publish::{self, Backend, Plan},
     transaction::{IdempotencyKey, RequestId},
 };
-use std::{io::Read, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 const ROOT: &str = "/var/lib/wcp-static";
 fn err(message: &str) -> StepError {
     StepError::new(ErrorCode::Conflict, message)
@@ -33,14 +33,12 @@ fn bounded(root: &ManagedRoot, path: &SiteRelativePath) -> Result<Option<String>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(err("route unavailable")),
     };
-    let mut value = String::new();
-    file.take(262145)
-        .read_to_string(&mut value)
-        .map_err(|_| err("invalid route"))?;
-    if value.len() > 262144 {
-        return Err(err("route too large"));
-    }
-    Ok(Some(value))
+    let bytes = crate::util::read_bounded(file, 262144)
+        .map_err(|_| err("invalid route"))?
+        .ok_or_else(|| err("route too large"))?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| err("invalid route"))
 }
 impl Host<'_> {
     fn route(&self, p: &Plan) -> Result<Option<String>, StepError> {
@@ -325,4 +323,41 @@ pub fn recover(domain: &str, id: &str) -> Result<Response, ResponseBuildError> {
             RequestId::parse(id).map_err(|_| err("invalid request ID"))?,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn message(result: Result<Option<String>, StepError>) -> String {
+        result.unwrap_err().message
+    }
+
+    #[test]
+    fn bounded_route_limit_symlink_and_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ManagedRoot::open(&TrustedRoot::parse(dir.path()).unwrap()).unwrap();
+        let rel = |name: &str| SiteRelativePath::parse(name).unwrap();
+        let write = |name: &str, bytes: &[u8]| fs::write(dir.path().join(name), bytes).unwrap();
+        assert_eq!(bounded(&root, &rel("missing")).unwrap(), None);
+        write("empty", b"");
+        assert_eq!(bounded(&root, &rel("empty")).unwrap(), Some(String::new()));
+        write("exact", &vec![b'a'; 262144]);
+        assert_eq!(
+            bounded(&root, &rel("exact")).unwrap().unwrap().len(),
+            262144
+        );
+        write("over", &vec![b'a'; 262145]);
+        assert_eq!(message(bounded(&root, &rel("over"))), "route too large");
+        write("wide", "\u{439}".repeat(131072).as_bytes());
+        assert_eq!(bounded(&root, &rel("wide")).unwrap().unwrap().len(), 262144);
+        write("binary", &[0xff, b'x']);
+        assert_eq!(message(bounded(&root, &rel("binary"))), "invalid route");
+        write("real", b"x");
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+        assert_eq!(message(bounded(&root, &rel("link"))), "route unavailable");
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        assert_eq!(message(bounded(&root, &rel("sub"))), "route unavailable");
+    }
 }

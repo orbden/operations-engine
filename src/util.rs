@@ -73,6 +73,15 @@ pub fn truncate_utf8_tail(text: &str, max: usize) -> &str {
     &text[start..]
 }
 
+/// Reads at most `max` bytes from `reader`. Returns `None` when the reader holds more than
+/// `max` bytes (one extra byte is read to tell, never more), so a caller can refuse an
+/// oversized input without buffering it.
+pub fn read_bounded(reader: impl Read, max: u64) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    reader.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= max).then_some(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +177,36 @@ mod tests {
             assert!(text.ends_with(tail));
         }
         assert_eq!(truncate_utf8_tail("x\u{1f600}", 4), "\u{1f600}");
+    }
+
+    #[test]
+    fn read_bounded_accepts_up_to_the_limit_only() {
+        assert_eq!(read_bounded(io::empty(), 0).unwrap(), Some(Vec::new()));
+        assert_eq!(read_bounded(&b"a"[..], 0).unwrap(), None);
+        assert_eq!(read_bounded(&b"abc"[..], 3).unwrap(), Some(b"abc".to_vec()));
+        assert_eq!(read_bounded(&b"abcd"[..], 3).unwrap(), None);
+        assert_eq!(read_bounded(&b"ab"[..], 3).unwrap(), Some(b"ab".to_vec()));
+        assert_eq!(
+            read_bounded(&b"ab"[..], u64::MAX).unwrap().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn read_bounded_reads_one_byte_past_the_limit_at_most() {
+        let mut source = io::Cursor::new(vec![0u8; 1000]);
+        assert_eq!(read_bounded(&mut source, 10).unwrap(), None);
+        assert_eq!(source.position(), 11);
+    }
+
+    #[test]
+    fn read_bounded_reports_read_errors() {
+        struct Failing;
+        impl Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("boom"))
+            }
+        }
+        assert!(read_bounded(Failing, 8).is_err());
     }
 }
