@@ -23,7 +23,10 @@ pub struct CleanupResult {
 
 pub fn cleanup_expired<D: Driver>(root: &ManagedRoot, now: u64, driver: &mut D) -> CleanupResult {
     let mut result = CleanupResult::default();
-    let Ok(artifacts) = root.open_managed_dir(&path("artifacts")) else {
+    let Some(artifacts_dir) = try_path("artifacts") else {
+        return result;
+    };
+    let Ok(artifacts) = root.open_managed_dir(&artifacts_dir) else {
         return result;
     };
     let Ok(names) = artifacts.file_names() else {
@@ -33,7 +36,10 @@ pub fn cleanup_expired<D: Driver>(root: &ManagedRoot, now: u64, driver: &mut D) 
         if !name.ends_with(".json") {
             continue;
         }
-        let manifest_path = path(&format!("artifacts/{name}"));
+        let Some(manifest_path) = try_path(&format!("artifacts/{name}")) else {
+            result.skipped_manifests += 1;
+            continue;
+        };
         let Ok(json) = root.read_to_string(&manifest_path) else {
             result.skipped_manifests += 1;
             continue;
@@ -58,10 +64,13 @@ pub fn cleanup_expired<D: Driver>(root: &ManagedRoot, now: u64, driver: &mut D) 
         }
         result.removed_source_volumes.push(manifest.source_volume);
 
-        let backup = path(&format!(
+        let Some(backup) = try_path(&format!(
             "backups/{}/{}.dump",
             manifest.upgrade_request_id, manifest.backup_id
-        ));
+        )) else {
+            result.skipped_manifests += 1;
+            continue;
+        };
         if root.exists(&backup) {
             if root.remove_file(&backup).is_err() {
                 result.skipped_manifests += 1;
@@ -86,22 +95,41 @@ pub fn cleanup_expired_now<D: Driver>(root: &ManagedRoot, driver: &mut D) -> Cle
     cleanup_expired(root, now, driver)
 }
 
-/// Docker volume names and dump uids as the engine writes them: they start
-/// with an ASCII alphanumeric, so `.`, `..`, `-flag` and `.hidden` are never
-/// accepted (defence in depth; see the module tests).
-fn valid_name(value: &str) -> bool {
-    let first = |b: u8| b.is_ascii_alphanumeric();
-    let rest = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
-    crate::util::charset_ok(value, 255, first, rest)
+/// First character of every name the engine writes: an ASCII alphanumeric, so
+/// `.`, `..`, `-flag`, `_x` and `.hidden` are never accepted. Shared by the
+/// cleanup validator and the dump-uid writer so the two cannot drift.
+const fn name_first_ok(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
 }
 
-fn path(value: &str) -> SiteRelativePath {
-    SiteRelativePath::parse(value).expect("validated static or engine-generated cleanup path")
+/// Docker volume names as the engine writes them (defence in depth; see the
+/// module tests).
+fn valid_name(value: &str) -> bool {
+    let rest = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    crate::util::charset_ok(value, 255, name_first_ok, rest)
+}
+
+/// Dump uids the writer accepts (Meilisearch uids are timestamps such as
+/// `20240101-120000123`). Always a subset of what `valid_name` accepts, so a
+/// backup that is written can also be cleaned up.
+pub(crate) fn valid_dump_uid(value: &str) -> bool {
+    let rest = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_');
+    crate::util::charset_ok(value, 128, name_first_ok, rest)
+}
+
+/// Builds a path from manifest-derived text; `None` when it is not a plain
+/// relative path, so the manifest is skipped instead of panicking.
+fn try_path(value: &str) -> Option<SiteRelativePath> {
+    SiteRelativePath::parse(value).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn path(value: &str) -> SiteRelativePath {
+        SiteRelativePath::parse(value).expect("test path")
+    }
     use crate::{
         meilisearch_upgrade::execute::RECOVERY_RETENTION_SECS, site::TrustedRoot,
         transaction::RequestId,
@@ -188,6 +216,57 @@ mod tests {
                 assert!(root.exists(&path(sentinel)), "{sentinel} was touched");
                 assert_eq!(root.read_to_string(&path(sentinel)).unwrap(), "keep");
             }
+        }
+    }
+
+    #[test]
+    fn dump_uid_writer_rule_is_a_subset_of_the_cleanup_rule() {
+        let alphabet: Vec<char> = "azAZ09-_.:/ \\\0\u{e9}".chars().collect();
+        let mut samples = vec![String::new(), "a".repeat(128), "a".repeat(129)];
+        for &first in &alphabet {
+            for &second in &alphabet {
+                samples.push(format!("{first}{second}"));
+                samples.push(format!("a{first}{second}"));
+            }
+        }
+        for uid in &samples {
+            if valid_dump_uid(uid) {
+                assert!(valid_name(uid), "{uid:?} written but never cleaned");
+            }
+        }
+        for first in ['-', '_', '.'] {
+            assert!(!valid_dump_uid(&format!("{first}20240101")));
+            assert!(!valid_name(&format!("{first}20240101")));
+        }
+        assert!(valid_dump_uid("20240101-120000123"));
+        assert!(!valid_dump_uid("a.b"));
+    }
+
+    #[test]
+    fn try_path_returns_none_for_unsafe_values_instead_of_panicking() {
+        for bad in ["", "/abs", "a/../b", "../x", "a//b", "backups/../x.dump"] {
+            assert!(try_path(bad).is_none(), "{bad:?}");
+        }
+        assert!(try_path("backups/id/dump-1.dump").is_some());
+    }
+
+    #[test]
+    fn cleanup_does_not_panic_on_manifest_names_that_break_path_building() {
+        // Names rejected by the validator, plus path-shaped values: each must
+        // skip the manifest and keep it.
+        for backup in ["a/../b", "../x", "a\0b", "", "x/y"] {
+            let (_dir, root, mut artifact) = fixture();
+            artifact.backup_id = backup.into();
+            let manifest = path("artifacts/123e4567-e89b-12d3-a456-426614174000.json");
+            root.write_atomic(&manifest, &serde_json::to_vec(&artifact).unwrap())
+                .unwrap();
+            let mut driver = Fake {
+                active: "target-volume".into(),
+                ..Fake::default()
+            };
+            let result = cleanup_expired(&root, artifact.expires_at_unix_secs, &mut driver);
+            assert_eq!(result.skipped_manifests, 1, "{backup:?}");
+            assert!(root.exists(&manifest));
         }
     }
 

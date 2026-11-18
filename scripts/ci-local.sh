@@ -25,10 +25,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 2
 fi
 
+# shellcheck source=scripts/repo-slug.sh
+. "$PWD/scripts/repo-slug.sh"
+
 sha="$(git rev-parse HEAD)"
-repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+repo="$(resolve_repo)"
 if [[ $report -eq 1 && -z "$repo" ]]; then
-  echo "ci-local: cannot resolve the GitHub repository (gh auth status)" >&2
+  echo "ci-local: cannot resolve the GitHub repository (gh auth status, origin remote)" >&2
   exit 2
 fi
 
