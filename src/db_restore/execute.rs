@@ -369,6 +369,7 @@ fn audit_log_path() -> SiteRelativePath {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::test_support::shell_quote;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::{RestoreContext, execute};
@@ -450,10 +451,6 @@ mod tests {
             received,
             argv_log,
         }
-    }
-
-    fn shell_quote(path: &std::path::Path) -> String {
-        format!("'{}'", path.to_str().unwrap())
     }
 
     fn context(host: &Host) -> RestoreContext<'_> {
