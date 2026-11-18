@@ -676,14 +676,8 @@ pub fn execute_pull(
 
 /// The last `limit` bytes of `text`, cut at a character boundary.
 fn tail_of(text: &str, limit: usize) -> (String, bool) {
-    if text.len() <= limit {
-        return (text.to_owned(), false);
-    }
-    let mut start = text.len() - limit;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    (text[start..].to_owned(), true)
+    let tail = crate::util::truncate_utf8_tail(text, limit);
+    (tail.to_owned(), tail.len() < text.len())
 }
 
 pub fn execute_image_remove(
@@ -1302,5 +1296,19 @@ mod tests {
         let free = statvfs_free_bytes("/").unwrap();
         assert!(free > 0);
         assert!(statvfs_free_bytes("/definitely/not/here").is_err());
+    }
+
+    #[test]
+    fn tail_of_keeps_the_end_at_a_character_boundary() {
+        assert_eq!(tail_of("", 5), (String::new(), false));
+        assert_eq!(tail_of("abc", 3), ("abc".to_owned(), false));
+        assert_eq!(tail_of("abcd", 3), ("bcd".to_owned(), true));
+        assert_eq!(tail_of("abc", 0), (String::new(), true));
+        assert_eq!(tail_of("", 0), (String::new(), false));
+        // "aйb" is a(1) й(2) b(1): a limit of 2 starts inside the 2-byte character.
+        assert_eq!(tail_of("a\u{439}b", 2), ("b".to_owned(), true));
+        assert_eq!(tail_of("a\u{439}b", 3), ("\u{439}b".to_owned(), true));
+        assert_eq!(tail_of("\u{1f600}x", 2), ("x".to_owned(), true));
+        assert_eq!(tail_of("\u{1f600}", 3), (String::new(), true));
     }
 }

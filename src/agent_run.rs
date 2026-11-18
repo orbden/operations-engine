@@ -124,8 +124,8 @@ pub struct RunReport {
 }
 
 fn tail(bytes: &[u8]) -> String {
-    let start = bytes.len().saturating_sub(OUTPUT_TAIL_BYTES);
-    String::from_utf8_lossy(&bytes[start..]).into_owned()
+    let text = String::from_utf8_lossy(bytes);
+    crate::util::truncate_utf8_tail(&text, OUTPUT_TAIL_BYTES).to_owned()
 }
 
 pub(crate) fn installed(dir: &Path, name: &str) -> bool {
@@ -557,5 +557,23 @@ echo "to stderr" >&2
             ErrorCode::PermissionDenied
         );
         assert_eq!(Error::Spawn.protocol().0, ErrorCode::DependencyUnavailable);
+    }
+
+    #[test]
+    fn tail_keeps_at_most_the_limit_from_the_end() {
+        assert_eq!(tail(b""), "");
+        let exact = "a".repeat(OUTPUT_TAIL_BYTES);
+        assert_eq!(tail(exact.as_bytes()), exact);
+        let over = format!("XY{exact}");
+        assert_eq!(tail(over.as_bytes()), exact);
+        assert_eq!(tail(&[0xff, b'x']), "\u{fffd}x");
+        // A cut inside a multi-byte character drops the partial character (it used to
+        // become a replacement character that pushed the text past the limit).
+        let wide = format!("\u{439}{exact}");
+        assert_eq!(tail(wide.as_bytes()), exact);
+        let wide = format!("{}b", "\u{20ac}".repeat(OUTPUT_TAIL_BYTES));
+        let cut = tail(wide.as_bytes());
+        assert!(cut.len() <= OUTPUT_TAIL_BYTES);
+        assert!(cut.ends_with("\u{20ac}b") && !cut.contains('\u{fffd}'));
     }
 }
