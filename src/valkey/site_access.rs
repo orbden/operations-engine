@@ -20,6 +20,7 @@
 //! Users are persisted with `ACL SAVE` into the ACL file the image keeps on
 //! its data volume, so they survive a restart.
 
+use crate::util::sha256_hex;
 use crate::{
     db_restore::ContainerName,
     error::ErrorCode,
@@ -39,7 +40,6 @@ use crate::{
     valkey::ADMIN_CLI,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROVISION_OPERATION: &str = "db.provisionValkeySite";
@@ -273,16 +273,6 @@ fn new_password() -> Result<String, Error> {
         }
     }
     Ok(out)
-}
-
-fn sha256_hex(value: &str) -> String {
-    use std::fmt::Write;
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 /// The ACL rules of a site user, as separate arguments. Only the hash of the
@@ -593,7 +583,7 @@ pub fn provision(
     };
     let steps = (|| {
         // The rules go as separate arguments of one ACL SETUSER.
-        let rules = acl_rules(&req.username(), database, &sha256_hex(&password));
+        let rules = acl_rules(&req.username(), database, &sha256_hex(password.as_bytes()));
         expect_ok(&admin(ctx, &req.container, &rules, cancel)?)?;
         expect_ok(&admin(
             ctx,
@@ -962,7 +952,7 @@ esac
 
     #[test]
     fn the_site_user_is_limited_to_its_database_and_gets_only_a_hash() {
-        let rules = acl_rules("site_a.test", 7, &sha256_hex("pw"));
+        let rules = acl_rules("site_a.test", 7, &sha256_hex(b"pw"));
         let text = rules.join(" ");
         assert!(text.starts_with("ACL SETUSER site_a.test reset on #"));
         assert!(text.contains(" resetkeys ~* resetchannels db=7 -@all "));
@@ -1042,7 +1032,7 @@ esac
         let password = secret["password"].as_str().unwrap().to_owned();
         assert_eq!(password.len(), PASSWORD_LEN);
         assert!(calls.iter().all(|call| !call.contains(&password)));
-        assert!(calls[0].contains(&sha256_hex(&password)));
+        assert!(calls[0].contains(&sha256_hex(password.as_bytes())));
         assert!(
             !fx.state_text().contains(&password),
             "the password is never stored"

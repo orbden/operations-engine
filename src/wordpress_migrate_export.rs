@@ -22,6 +22,7 @@
 //! hold a full database dump, so the panel discards them as soon as they are
 //! transferred, and also after a failed migration.
 
+use crate::util::hex;
 use std::{
     fs,
     io::{self, Read},
@@ -600,12 +601,7 @@ pub fn sha256_file(path: &Path) -> io::Result<(u64, String)> {
         digest.update(&buffer[..read]);
         total += read as u64;
     }
-    let mut hex = String::with_capacity(64);
-    for byte in digest.finalize() {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    Ok((total, hex))
+    Ok((total, hex(&digest.finalize())))
 }
 
 fn wp_read(

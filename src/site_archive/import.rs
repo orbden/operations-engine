@@ -24,6 +24,7 @@
 //! it was lives in `site-sync/snapshots/<hash of the root>.json` in the engine
 //! state). The staged archive is removed whatever happened.
 
+use crate::util::sha256_hex;
 use std::{
     fs,
     io::{self, Seek},
@@ -33,7 +34,6 @@ use std::{
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{
     EXPORTS_DIR, Error, MANIFEST_SCHEMA_VERSION, Manifest, SNAPSHOT_RECORDS, SnapshotRecord,
@@ -336,13 +336,7 @@ fn import_with_recovery(
 
 /// SHA-256 of the root path, hex: names the root's marker and snapshot record.
 fn root_hash(root: &Path) -> String {
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    sha256_hex(root.as_os_str().as_encoded_bytes())
 }
 
 fn record_rel(root: &Path) -> SiteRelativePath {

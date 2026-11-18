@@ -76,7 +76,7 @@ fn index(sequence: u64, published: &str, expires: &str, manifest: &[u8]) -> Vec<
     format!(
         r#"{{"schemaVersion":1,"sequence":{sequence},"publishedAt":"{published}","expiresAt":"{expires}","manifest":{{"path":"/releases/{sequence:06}/manifest.json","bytes":{},"sha256":"{}"}}}}"#,
         manifest.len(),
-        hex(&Sha256::digest(manifest)),
+        sha256_hex(manifest),
     )
     .into_bytes()
 }

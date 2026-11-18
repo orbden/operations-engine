@@ -14,13 +14,13 @@
 
 pub mod execute;
 
+use crate::util::hex;
 use crate::{
     db_restore::{ContainerName, DatabaseName},
     transaction::{IdempotencyKey, RequestId},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
 
 pub const ENSURE_OPERATION: &str = "db.ensureReadonlyUser";
 pub const REVOKE_OPERATION: &str = "db.revokeReadonlyUser";
@@ -155,10 +155,7 @@ pub fn username_for(database: &DatabaseName) -> String {
         return full;
     }
     let digest = Sha256::digest(database.as_str().as_bytes());
-    let suffix = digest.iter().take(4).fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    });
+    let suffix = hex(&digest[..4]);
     // 32 - "_" - 8 hex digits.
     format!("{}_{suffix}", &full[..MAX_USER_LEN - 9])
 }

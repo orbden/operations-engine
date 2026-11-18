@@ -1,6 +1,7 @@
 //! Offline, single-database restore with a private durable rollback snapshot.
 //! The existing raw import helper remains available to enclosing CMS transactions.
 use super::execute::{RestoreContext, open_restore_state};
+use crate::util::hex;
 use crate::{
     db_restore::{DbType, RestoreRequest, RestoreResult},
     error::ErrorCode,
@@ -388,14 +389,7 @@ fn digest(mut f: File) -> Result<String, Error> {
         }
         hash.update(&buf[..n]);
     }
-    let bytes = hash.finalize();
-    let mut hex = String::with_capacity(64);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in bytes {
-        hex.push(HEX[(byte >> 4) as usize] as char);
-        hex.push(HEX[(byte & 15) as usize] as char);
-    }
-    Ok(hex)
+    Ok(hex(&hash.finalize()))
 }
 fn container_id(c: &RestoreContext<'_>, r: &RestoreRequest) -> Result<String, Error> {
     let out = process::run(

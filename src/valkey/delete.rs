@@ -1,3 +1,4 @@
+use crate::util::sha256_hex;
 use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
@@ -14,11 +15,7 @@ use crate::{
     },
     valkey::{DELETE_OPERATION, DeleteRequest, DeleteResult},
 };
-use sha2::{Digest, Sha256};
-use std::{
-    fmt::Write as _,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Context<'a> {
     pub engine_state: &'a ManagedRoot,
@@ -185,11 +182,7 @@ pub fn execute(
 }
 
 fn open(root: &ManagedRoot, key: &str) -> std::io::Result<ManagedRoot> {
-    let digest = Sha256::digest(key.as_bytes());
-    let mut key_hash = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut key_hash, "{byte:02x}").expect("writing to a String cannot fail");
-    }
+    let key_hash = sha256_hex(key.as_bytes());
     let path = SiteRelativePath::parse(format!("valkey-delete/{key_hash}")).unwrap();
     root.create_dir_all(&path)?;
     let scope = root.open_managed_dir(&path)?;

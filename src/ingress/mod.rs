@@ -33,10 +33,10 @@ pub mod unpark;
 #[cfg(all(test, unix))]
 pub(crate) mod fake_docker;
 
+use crate::util::sha256_hex;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     site::{Domain, SiteRelativePath},
@@ -119,16 +119,7 @@ pub struct InvalidConfigHash;
 impl ConfigHash {
     /// The digest of `bytes`, as this engine will report it.
     pub fn of(bytes: &[u8]) -> Self {
-        use std::fmt::Write as _;
-
-        Self(
-            Sha256::digest(bytes)
-                .iter()
-                .fold(String::with_capacity(64), |mut hex, byte| {
-                    let _ = write!(hex, "{byte:02x}");
-                    hex
-                }),
-        )
+        Self(sha256_hex(bytes))
     }
 
     /// A caller-supplied digest. Accepts either case on input and
