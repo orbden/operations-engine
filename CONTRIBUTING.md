@@ -42,6 +42,7 @@ with a test instead of making a copy.
 | Lowercase hex text | `hex` | `src/util.rs` |
 | SHA-256 of bytes or a reader | `sha256_hex`, `sha256_reader` | `src/util.rs` |
 | Generated secret text | `random_alnum` | `src/util.rs` |
+| Generated text from a given byte source (tests with fixed bytes) | `random_alnum_from` | `src/util.rs` |
 | PHP single-quoted literal | `php_single_quote` | `src/util.rs` |
 | Cut text at a byte limit on a char boundary | `truncate_utf8_head`, `truncate_utf8_tail` | `src/util.rs` |
 | Refuse an oversized input without buffering it | `read_bounded` | `src/util.rs` |
@@ -58,7 +59,12 @@ with a test instead of making a copy.
   loop (`charset_ok`). Do not widen one validator to match another, and do not
   copy the loop.
 - Validation, escaping and quoting helpers change only together with table
-  tests of accepted and rejected inputs.
+  tests of accepted and rejected inputs. A new or changed validator needs a
+  table of accepted and rejected inputs.
+- `random_alnum` reads `/dev/urandom` and is what production code calls.
+  `random_alnum_from` takes any `Read` and is for tests that need fixed bytes
+  or for a source that is not the kernel's.
+- Before adding a helper, grep this table and the code.
 - `tests/contributing_helpers.rs` fails when a name in the table is no longer
   defined in its file. Update the table when you move or rename a helper.
 
