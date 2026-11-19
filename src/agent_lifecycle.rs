@@ -214,7 +214,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "backup-restore-drill",
-        version: "1.1.0",
+        version: "1.1.1",
         default_schedule: Some("0 3 * * *"),
         configurable_schedule: true,
         script: include_str!("../resources/agents/backup-restore-drill.sh"),
@@ -610,7 +610,7 @@ mod tests {
         ),
         (
             "backup-restore-drill",
-            "b4e342481f058677b1db441450447a674d9d4002d0cab0eb959817bc26d642b3",
+            "f8145f06ec297e6483017c515013334a27c015f7f09c6093d84f9c8e2892103e",
         ),
         (
             "error-log-digest",
