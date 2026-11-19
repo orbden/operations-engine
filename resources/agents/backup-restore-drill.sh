@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: backup-restore-drill
-# wcp-agent-version: 1.1.0
+# wcp-agent-version: 1.1.1
 # wcp-agent-description: Restores the latest DB backup into a throwaway container and compares restored schema/data with the immutable snapshot
 
 set -euo pipefail

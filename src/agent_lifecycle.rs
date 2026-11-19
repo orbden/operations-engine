@@ -610,7 +610,7 @@ mod tests {
         ),
         (
             "backup-restore-drill",
-            "f8145f06ec297e6483017c515013334a27c015f7f09c6093d84f9c8e2892103e",
+            "919ae2cd8993811c9223afd722bf6ffdc90cd680a9675c962169252a06927a4c",
         ),
         (
             "error-log-digest",
