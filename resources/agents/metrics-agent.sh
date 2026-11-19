@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: metrics-agent
-# wcp-agent-version: 1.1.0
+# wcp-agent-version: 1.1.1
 # wcp-agent-description: Collects system metrics every minute, rotating into monthly files (3-month retention)
 
 set -euo pipefail
@@ -19,7 +19,7 @@ PROC_UPTIME="${PROC_UPTIME:-/proc/uptime}"
 export PROC_STAT PROC_LOADAVG PROC_NET_DEV PROC_UPTIME
 
 python3 - << 'PYEOF'
-import glob, json, os, re, sys, time
+import functools, glob, json, os, re, sys, time
 
 METRICS_DIR   = os.environ["METRICS_DIR"]
 PROC_STAT     = os.environ["PROC_STAT"]
@@ -28,13 +28,12 @@ PROC_NET_DEV  = os.environ["PROC_NET_DEV"]
 PROC_UPTIME   = os.environ["PROC_UPTIME"]
 
 sys.path.insert(0, os.path.join(os.environ.get("WCP_DIR", "/root/.wcp"), "agents"))
-from wcp_agent_lib import run
+from wcp_agent_lib import run_cmd as _run_cmd
 
 os.makedirs(METRICS_DIR, exist_ok=True)
 
 
-def run_cmd(cmd, timeout=10):
-    return run(cmd, timeout=timeout)
+run_cmd = functools.partial(_run_cmd, timeout=10)
 
 
 # ── CPU (via /proc/stat diff over 0.5s) ─────────────────────────────────────

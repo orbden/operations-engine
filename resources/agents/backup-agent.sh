@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: backup-agent
-# wcp-agent-version: 1.1.1
+# wcp-agent-version: 1.1.2
 # wcp-agent-description: DB + file backups to S3/B2/R2 with Slack/Discord/webhook notifications
 
 set -euo pipefail
@@ -10,7 +10,7 @@ export WCP_DIR
 trap 'ec=$?; mkdir -p "$WCP_DIR/agents"; echo "{\"ts\":$(date +%s),\"exit_code\":$ec}" > "$WCP_DIR/agents/backup-agent.heartbeat"' EXIT
 
 python3 - "$@" << 'PYEOF'
-import argparse, fcntl, gzip, hashlib, json, os, re, shutil, sys, time, uuid
+import argparse, fcntl, functools, gzip, hashlib, json, os, re, shutil, sys, time, uuid
 
 SAFE_DB_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -22,7 +22,7 @@ NOTIFY_FILE = os.path.join(WCP_DIR, "notify.conf")
 RCLONE_CONF = os.path.join(WCP_DIR, "rclone.conf")
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import log_entry as _log_entry, notify as _notify, run, database_dump_command, sql_digest
+from wcp_agent_lib import make_logger, notify as _notify, run_cmd as _run_cmd, shell_quote, database_dump_command, sql_digest
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
 parser = argparse.ArgumentParser()
@@ -36,16 +36,8 @@ except BlockingIOError:
     sys.exit("Another backup is running; retry after it completes")
 
 
-def sh_esc(s):
-    return "'" + str(s).replace("'", "'\\''") + "'"
-
-
-def run_cmd(cmd, timeout=3600):
-    return run("bash -o pipefail -c " + sh_esc(cmd), timeout=timeout)
-
-
-def log_entry(entry):
-    _log_entry(LOG_FILE, entry)
+run_cmd = functools.partial(_run_cmd, timeout=3600, pipefail=True)
+log_entry = make_logger(LOG_FILE)
 
 
 try:
@@ -103,14 +95,14 @@ for job in jobs:
             if database == "*":
                 if db_type == "mariadb":
                     r = run_cmd(
-                        f"docker exec {sh_esc(container)} mariadb -uroot -p{sh_esc(password)} "
+                        f"docker exec {shell_quote(container)} mariadb -uroot -p{shell_quote(password)} "
                         f"-N -e 'SHOW DATABASES'"
                     )
                     skip = {"information_schema", "performance_schema", "mysql", "sys"}
                     dbs = [d.strip() for d in r.stdout.splitlines() if d.strip() and d.strip() not in skip]
                 else:
                     r = run_cmd(
-                        f"docker exec -e PGPASSWORD={sh_esc(password)} {sh_esc(container)} psql -U postgres -At "
+                        f"docker exec -e PGPASSWORD={shell_quote(password)} {shell_quote(container)} psql -U postgres -At "
                         f"-c 'SELECT datname FROM pg_database WHERE datistemplate = false'"
                     )
                     dbs = [d.strip() for d in r.stdout.splitlines() if d.strip()]
@@ -140,13 +132,13 @@ for job in jobs:
                 fname  = f"{db}_{ts_str}.sql.gz"
                 fpath  = os.path.join(payload_dir, fname)
 
-                cmd = database_dump_command(db_type, container, password, db) + f" | gzip > {sh_esc(fpath)}"
+                cmd = database_dump_command(db_type, container, password, db) + f" | gzip > {shell_quote(fpath)}"
 
                 r = run_cmd(cmd)
                 if r.returncode != 0:
                     raise RuntimeError(f"Dump failed for {db}: {r.stderr.strip()[:300]}")
 
-                r = run_cmd(f"gzip -t {sh_esc(fpath)}")
+                r = run_cmd(f"gzip -t {shell_quote(fpath)}")
                 if r.returncode != 0:
                     raise RuntimeError(f"Integrity check failed for {fname}")
 
@@ -163,11 +155,11 @@ for job in jobs:
         elif job_type == "files":
             src_path = job.get("path", "")
             excludes = job.get("exclude", [])
-            exclude_args = " ".join(f"--exclude {sh_esc(e)}" for e in excludes)
+            exclude_args = " ".join(f"--exclude {shell_quote(e)}" for e in excludes)
             if not os.path.isdir(src_path):
                 raise RuntimeError("Backup source directory does not exist")
             # ponytail: full snapshots require local disk equal to source size; add incremental storage only when capacity requires it.
-            r = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} copy {sh_esc(src_path)} {sh_esc(payload_dir)} {exclude_args}")
+            r = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} copy {shell_quote(src_path)} {shell_quote(payload_dir)} {exclude_args}")
             if r.returncode != 0:
                 raise RuntimeError("File snapshot failed")
         else:
@@ -175,7 +167,7 @@ for job in jobs:
 
         # Publish the completion marker only after a full content comparison.
         for action in ("copy", "check --download"):
-            r = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} {action} {sh_esc(payload_dir)} {sh_esc(remote_snapshot + '/data')}")
+            r = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} {action} {shell_quote(payload_dir)} {shell_quote(remote_snapshot + '/data')}")
             if r.returncode != 0:
                 raise RuntimeError("Snapshot upload/verification failed")
         manifest["files"] = {}
@@ -190,14 +182,14 @@ for job in jobs:
         marker = os.path.join(staging, "manifest.json")
         with open(marker, "w") as f:
             json.dump(manifest, f)
-        r = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} copyto {sh_esc(marker)} {sh_esc(remote_snapshot + '/manifest.json')}")
+        r = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} copyto {shell_quote(marker)} {shell_quote(remote_snapshot + '/manifest.json')}")
         if r.returncode != 0:
             raise RuntimeError("Snapshot publication failed")
         os.rename(staging, os.path.join(job_dir, generation))
 
         # Retention is bounded to completed generations of this job, never file mtimes.
         if remote_ret > 0:
-            r = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} lsf --dirs-only {sh_esc(remote_root)}")
+            r = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} lsf --dirs-only {shell_quote(remote_root)}")
             if r.returncode != 0:
                 raise RuntimeError("Snapshot retention listing failed")
             candidates = []
@@ -208,7 +200,7 @@ for job in jobs:
                 if int(name.split("-")[0]) / 1_000_000_000 >= start_ts - remote_ret * 86400:
                     continue
                 target = remote_root + "/" + name
-                old = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} cat {sh_esc(target + '/manifest.json')}")
+                old = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} cat {shell_quote(target + '/manifest.json')}")
                 if old.returncode != 0:
                     continue  # Incomplete uploads are never retention candidates.
                 data = json.loads(old.stdout)
@@ -221,7 +213,7 @@ for job in jobs:
                 if job_type == "db" and (protected is None or name == protected):
                     continue
                 target = remote_root + "/" + name
-                r = run_cmd(f"rclone --config {sh_esc(RCLONE_CONF)} purge {sh_esc(target)}")
+                r = run_cmd(f"rclone --config {shell_quote(RCLONE_CONF)} purge {shell_quote(target)}")
                 if r.returncode != 0:
                     raise RuntimeError("Snapshot retention failed")
         local_ret = int(job.get("local_retention_days", 7))

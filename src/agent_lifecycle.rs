@@ -178,7 +178,7 @@ impl Agent {
 pub static AGENTS: [Agent; 7] = [
     Agent {
         name: "metrics-agent",
-        version: "1.1.0",
+        version: "1.1.1",
         default_schedule: Some("* * * * *"),
         configurable_schedule: false,
         script: include_str!("../resources/agents/metrics-agent.sh"),
@@ -187,7 +187,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "resource-alert",
-        version: "1.0.0",
+        version: "1.0.1",
         default_schedule: Some("*/5 * * * *"),
         configurable_schedule: false,
         script: include_str!("../resources/agents/resource-alert.sh"),
@@ -196,7 +196,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "backup-agent",
-        version: "1.1.1",
+        version: "1.1.2",
         default_schedule: None,
         configurable_schedule: false,
         script: include_str!("../resources/agents/backup-agent.sh"),
@@ -205,7 +205,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: GUARD_NAME,
-        version: "2.1.0",
+        version: "2.1.1",
         default_schedule: Some("* * * * *"),
         configurable_schedule: false,
         script: include_str!("../resources/agents/bruteforce-guard.sh"),
@@ -223,7 +223,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "error-log-digest",
-        version: "1.0.0",
+        version: "1.0.1",
         default_schedule: Some("0 8 * * *"),
         configurable_schedule: true,
         script: include_str!("../resources/agents/error-log-digest.sh"),
@@ -232,7 +232,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "cache-warmup",
-        version: "1.0.0",
+        version: "1.0.1",
         default_schedule: Some("0 4 * * *"),
         configurable_schedule: true,
         script: include_str!("../resources/agents/cache-warmup.sh"),
@@ -594,19 +594,19 @@ mod tests {
     pub const PINNED: [(&str, &str); 7] = [
         (
             "metrics-agent",
-            "65244a0376b2065dbb74f873adb438575ca4a87c02be549c13b3298a1adc3807",
+            "cbedab5df985ac38605638f9b54f433297051a55e883397e758a0ef87277a5ac",
         ),
         (
             "resource-alert",
-            "8e286f0c64465f2aa6dba83a347f4b2e69829c94469e933f7dd4ae9f197632c6",
+            "df62a64089fb0febeafbf6ae798ec225e96ebc284393b8d5a9e9f942ddccfe29",
         ),
         (
             "backup-agent",
-            "2547ade7402d6aaabefc67ef4bda69ffe31755d9e0e1cd2ded77570056b7898f",
+            "f4aa2ebcc8cfee90d1db2551c2fddac5c0dc809eeb77a2d9d2c8b0c34a210bac",
         ),
         (
             "bruteforce-guard",
-            "1706c80b5383fe5f6afd86b607cbd652e3022a68e80366bf30bbfd90daae8df3",
+            "2b0e3296d1e02b050b98c903cbaa2861f9396f64e533764b732db95249afca53",
         ),
         (
             "backup-restore-drill",
@@ -614,11 +614,11 @@ mod tests {
         ),
         (
             "error-log-digest",
-            "640a4067de5866ef14cb57c7051e5de6a0eb0e418dd9d500149fd00367fb68ba",
+            "cb28312f74ae6e190cbc3126b47f8c8bcb9e456f47c1fc48df4b2548744d47ff",
         ),
         (
             "cache-warmup",
-            "900cc47aac66b8b5829f2c739ba129e4ca9f2cd5dbb5e045e88dcbd27c59833f",
+            "84e84d8eea0881fb8357ad1442e30ee3e0a8178680dc18593d097c3171450cd8",
         ),
     ];
 
