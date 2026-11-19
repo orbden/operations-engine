@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: bruteforce-guard
-# wcp-agent-version: 2.1.0
+# wcp-agent-version: 2.1.1
 # wcp-agent-description: Fail2Ban-style brute-force protection for wp-login and general Caddy abuse. Bans in the ingress Caddy (a `remote_ip` block every route imports) instead of iptables, since containerized (Docker bridge + published-port) traffic is NAT'd through DOCKER-USER/FORWARD, not INPUT, so classic fail2ban bans never actually apply. The ban list is applied by the Operations Engine (`ingress.applyBans`), never by editing route files.
 #
 # Run modes:
@@ -53,7 +53,7 @@ REQUEST_FILE = os.path.join(WCP_DIR, "bruteforce-apply-request.json")
 NOTIFY_FILE  = os.path.join(WCP_DIR, "notify.conf")
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import log_entry as _log_entry, notify as _notify, read_json, run_argv, write_json
+from wcp_agent_lib import make_logger, notify as _notify, read_json, run_argv, write_json
 
 os.makedirs(WCP_DIR, exist_ok=True)
 open(BANS_FILE, "a").close()
@@ -188,8 +188,7 @@ def write_bans(bans):
             f.write(f"{b['ip']} {b['jail']} {b['banned_at']} {b['expires_at']}\n")
 
 
-def log_event(entry):
-    _log_entry(EVENTS_FILE, entry)
+log_event = make_logger(EVENTS_FILE)
 
 
 bans = read_bans()

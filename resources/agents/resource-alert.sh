@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: resource-alert
-# wcp-agent-version: 1.0.0
+# wcp-agent-version: 1.0.1
 # wcp-agent-description: CPU/RAM/Disk threshold monitor - writes alerts to /root/.wcp/resource-alerts.jsonl
 
 set -euo pipefail
@@ -26,10 +26,11 @@ NOTIFY_FILE  = os.path.join(WCP_DIR, "notify.conf")
 MAX_LINES    = 10000
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import log_entry as _log_entry, notify as _notify, read_json, run, write_json
+from wcp_agent_lib import make_logger, notify as _notify, read_json, run, write_json
 
 os.makedirs(WCP_DIR, exist_ok=True)
 open(LOG_FILE, "a").close()
+log_entry = make_logger(LOG_FILE, MAX_LINES)
 
 conf = read_json(CONF_FILE, {}) or {}
 cpu_pct = int(conf.get("cpu_pct", 90))
@@ -50,7 +51,7 @@ def emit(metric, value, threshold, mount=None):
     entry = {"metric": metric, "value": value, "threshold": threshold, "ts": now}
     if mount is not None:
         entry["mount"] = mount
-    _log_entry(LOG_FILE, entry, max_lines=MAX_LINES)
+    log_entry(entry)
 
     summary = f"Resource alert: {metric} at {value}% (threshold {threshold}%)"
     if mount is not None:

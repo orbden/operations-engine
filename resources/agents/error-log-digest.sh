@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: error-log-digest
-# wcp-agent-version: 1.0.0
+# wcp-agent-version: 1.0.1
 # wcp-agent-description: Daily digest of grouped WordPress debug.log entries and Caddy 5xx responses across every site
 
 set -euo pipefail
@@ -11,7 +11,7 @@ export WCP_DIR SITES_ROOT
 trap 'ec=$?; mkdir -p "$WCP_DIR/agents"; echo "{\"ts\":$(date +%s),\"exit_code\":$ec}" > "$WCP_DIR/agents/error-log-digest.heartbeat"' EXIT
 
 python3 - << 'PYEOF'
-import glob, json, os, re, sys, time
+import functools, glob, json, os, re, sys, time
 
 WCP_DIR     = os.environ.get("WCP_DIR", "/root/.wcp")
 SITES_ROOT  = os.environ.get("SITES_ROOT", "/var/www")
@@ -22,19 +22,11 @@ OFFSETS_FILE = os.path.join(WCP_DIR, "error-digest-offsets.json")
 MAX_MESSAGE_LEN = 120
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import log_entry as _log_entry, notify as _notify, run, run_argv
+from wcp_agent_lib import make_logger, notify as _notify, run_argv, run_cmd as _run_cmd, shell_quote
 
 
-def sh_esc(s):
-    return "'" + str(s).replace("'", "'\\''") + "'"
-
-
-def run_cmd(cmd, timeout=60):
-    return run(cmd, timeout=timeout)
-
-
-def log_entry(entry):
-    _log_entry(LOG_FILE, entry)
+run_cmd = functools.partial(_run_cmd, timeout=60)
+log_entry = make_logger(LOG_FILE)
 
 
 try:
@@ -89,7 +81,7 @@ containers_out = run_cmd("docker ps --format '{{.Names}}'").stdout
 containers = [c for c in containers_out.splitlines() if c.startswith("frankenphp")]
 
 for container in containers:
-    logfiles_out = run_cmd(f"docker exec {sh_esc(container)} sh -c 'ls /var/log/caddy/*.log 2>/dev/null'").stdout
+    logfiles_out = run_cmd(f"docker exec {shell_quote(container)} sh -c 'ls /var/log/caddy/*.log 2>/dev/null'").stdout
     for logfile in [l for l in logfiles_out.splitlines() if l.strip()]:
         key = f"caddy:{container}:{logfile}"
         prev_offset = offsets.get(key, 0)

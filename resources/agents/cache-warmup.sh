@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: cache-warmup
-# wcp-agent-version: 1.0.0
+# wcp-agent-version: 1.0.1
 # wcp-agent-description: Pre-warms the full-page cache for every site by crawling its sitemap.xml (falls back to the homepage)
 #
 # Run modes:
@@ -21,7 +21,7 @@ fi
 export DOMAIN_ARG="$domain_arg"
 
 python3 - << 'PYEOF'
-import glob, os, re, sys, time
+import functools, glob, os, re, sys, time
 
 WCP_DIR    = os.environ.get("WCP_DIR", "/root/.wcp")
 SITES_ROOT = os.environ.get("SITES_ROOT", "/var/www")
@@ -32,13 +32,12 @@ MAX_URLS = 200
 MAX_SUB_SITEMAPS = 20
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import log_entry as _log_entry, run_argv
+from wcp_agent_lib import make_logger, run_cmd as _run_cmd
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 
-def run_cmd(cmd, timeout=30):
-    return run_argv(cmd, timeout=timeout)
+run_cmd = functools.partial(_run_cmd, timeout=30)
 
 
 def fetch(url):
@@ -63,8 +62,7 @@ def warm(url):
         return False
 
 
-def log_entry(entry):
-    _log_entry(LOG_FILE, entry)
+log_entry = make_logger(LOG_FILE)
 
 
 def extract_locs(xml):
