@@ -32,6 +32,36 @@ pull request. Checks are not run in GitHub Actions.
 - Add integration tests for every command's public JSON shape.
 - Do not advertise an operation through `capabilities` before it is implemented.
 
+## Shared helpers: use them, do not re-create them
+
+Before writing a helper, grep for it. If one exists and almost fits, extend it
+with a test instead of making a copy.
+
+| Need | Use | Where |
+| --- | --- | --- |
+| Lowercase hex text | `hex` | `src/util.rs` |
+| SHA-256 of bytes or a reader | `sha256_hex`, `sha256_reader` | `src/util.rs` |
+| Generated secret text | `random_alnum` | `src/util.rs` |
+| PHP single-quoted literal | `php_single_quote` | `src/util.rs` |
+| Cut text at a byte limit on a char boundary | `truncate_utf8_head`, `truncate_utf8_tail` | `src/util.rs` |
+| Refuse an oversized input without buffering it | `read_bounded` | `src/util.rs` |
+| First/rest character-class loop of a validator | `charset_ok` | `src/util.rs` |
+| Set keys in a Compose `.env` atomically | `update_env_atomic` | `src/util.rs` |
+| Unix time now, civil date to days | `unix_now_secs`, `unix_now_secs_i64`, `days_from_civil` | `src/clock.rs` |
+| DNS name or IPv4 of a network peer | `is_dns_name_or_ipv4` | `src/host_name.rs` |
+| Captured subprocess output as text | `CapturedOutput::text` | `src/process.rs` |
+| Meilisearch backup name rules | `name_first_ok`, `valid_dump_uid` | `src/meilisearch_upgrade/cleanup.rs` |
+| Shell word in a unit-test fake program | `shell_quote` | `src/test_support.rs` |
+| `OWNER/NAME` from a remote URL in scripts | `repo_slug_from_url` | `scripts/repo-slug.sh` |
+
+- Each validator keeps its own limits and character set and shares only the
+  loop (`charset_ok`). Do not widen one validator to match another, and do not
+  copy the loop.
+- Validation, escaping and quoting helpers change only together with table
+  tests of accepted and rejected inputs.
+- `tests/contributing_helpers.rs` fails when a name in the table is no longer
+  defined in its file. Update the table when you move or rename a helper.
+
 ## Adding a command
 
 1. Define its CLI shape in `src/cli.rs`.

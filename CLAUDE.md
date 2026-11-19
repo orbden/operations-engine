@@ -20,6 +20,10 @@ pull request. Merge only when both statuses are green; do not use `--admin`.
 - Do not advertise an operation or feature before it works.
 - Secrets never appear in argv, state, audit or error text.
 
+- Before writing a helper, grep for it; the shared ones are listed in
+  `CONTRIBUTING.md` ("Shared helpers"). Extend the shared one with a test
+  instead of copying it.
+
 ## Project skills
 
 `.claude/skills/adding-engine-operations` is the procedure for new operations,
