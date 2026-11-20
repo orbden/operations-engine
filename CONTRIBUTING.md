@@ -48,6 +48,7 @@ with a test instead of making a copy.
 | Refuse an oversized input without buffering it | `read_bounded` | `src/util.rs` |
 | First/rest character-class loop of a validator | `charset_ok` | `src/util.rs` |
 | Set keys in a Compose `.env` atomically | `update_env_atomic` | `src/util.rs` |
+| Set keys in `.env` text (no file access) | `set_env_lines` | `src/util.rs` |
 | Unix time now, civil date to days | `unix_now_secs`, `unix_now_secs_i64`, `days_from_civil` | `src/clock.rs` |
 | DNS name or IPv4 of a network peer | `is_dns_name_or_ipv4` | `src/host_name.rs` |
 | Captured subprocess output as text | `CapturedOutput::text` | `src/process.rs` |

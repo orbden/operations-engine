@@ -15,6 +15,8 @@ pub mod agent_systemd;
 #[cfg(unix)]
 pub mod agent_tool;
 pub mod agent_validate;
+#[cfg(unix)]
+pub mod application_install;
 pub mod backup_create;
 pub mod backup_delete;
 pub mod backup_deploy;
@@ -183,6 +185,7 @@ pub fn execute(cli: Cli) -> Response {
         Command::Meilisearch { command } => commands::meilisearch::run(command),
         Command::Permissions { command } => commands::permissions::run(command),
         Command::Wordpress { command } => commands::wordpress::run(command),
+        Command::Application { command } => commands::application::run(command),
         Command::Drupal { command } => commands::drupal::run(command),
         Command::Joomla { command } => commands::joomla::run(command),
         Command::Cms { command } => commands::cms::run(command),

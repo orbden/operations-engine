@@ -128,6 +128,7 @@ fn capabilities_describe_only_implemented_operations() {
             "permissions.fixOwnership",
             "permissions.fixWorldWritable",
             "wordpress.cleanup",
+            "application.install",
             "wordpress.install",
             "wordpress.import",
             "wordpress.clone",
