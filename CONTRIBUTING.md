@@ -4,7 +4,7 @@ Operations Engine is at an early stage. Protocol and security decisions should
 be made explicitly before adding mutating server operations.
 
 Design notes and milestones that go beyond this repository live in the private
-`website-control-panel` repository under `documentation/operations-engine/`
+`website-control-panel` repository under `docs/operations-engine/`
 (they were in a separate docs repository until 2026-11-20).
 
 ## Local checks
