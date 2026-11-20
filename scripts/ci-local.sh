@@ -88,7 +88,8 @@ run_check() { # context command...
 }
 
 lint_and_test() {
-  step "cargo fmt --check" none cargo fmt --all --check &&
+  step "repo-slug script test" none bash scripts/test-repo-slug.sh &&
+    step "cargo fmt --check" none cargo fmt --all --check &&
     step "cargo clippy -D warnings" none cargo clippy --all-targets --all-features -- -D warnings &&
     step "cargo test --all-features" test_counts cargo test --all-features
 }
