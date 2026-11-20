@@ -4,6 +4,10 @@
 > implementation plan, delivery notes, and decision log. It is historical and
 > is no longer the source of current priority or status. See
 > [`../PLAN.md`](../PLAN.md) for the active roadmap.
+>
+> References below to "the docs repo" (or `local-control-panel/docs`) mean the
+> `documentation/` directory of the private `website-control-panel` repository,
+> where that repository was merged on 2026-11-20 with its history.
 
 Status: active  
 Current phase: 7 — release and production hardening. Phases 0-6 are all
