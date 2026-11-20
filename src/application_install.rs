@@ -580,6 +580,7 @@ fn undo(root: &ManagedRoot, staging: &str, created: &Created) {
 
 /// `docker exec` as the site's UID in the project root; `program_and_args`
 /// never carries caller text except the validated address.
+#[allow(clippy::too_many_arguments)]
 fn exec(
     ctx: &Context<'_>,
     req: &Request,
