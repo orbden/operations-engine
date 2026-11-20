@@ -365,6 +365,11 @@ fn install(
             .map_err(|_| Error::RootUnavailable)?;
     let docroot = req.application.docroot();
     require_empty(&root, docroot)?;
+    // `site.create` gives the site's UID only the docroot; a Composer
+    // application writes `vendor/`, `storage/` and its staging directory
+    // beside it, so the project root itself passes to the site's UID. Never
+    // recursive, and only after the root was proven empty.
+    root.chown_self(req.uid, req.gid).map_err(Error::Io)?;
 
     let staging = format!(".wcp-install-{}", req.request_id);
     let mut created = Created::default();
@@ -824,6 +829,8 @@ exit 0
         assert_eq!(result.version, "6.2.1");
         assert_eq!(result.admin_url, "https://example.com/cp");
         assert_eq!(f.names(""), [".env", "app", "composer.lock", "public"]);
+        let meta = fs::metadata(&f.site).unwrap();
+        assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));
         assert_eq!(f.names("public"), [".user.ini", "index.php"]);
         let env = fs::read_to_string(f.site.join(".env")).unwrap();
         assert_eq!(
