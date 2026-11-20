@@ -12,11 +12,14 @@
 //! 2. every top-level entry moves into the project root with a typed rename,
 //!    the docroot's entries into the existing docroot;
 //! 3. a fixed set of `.env` keys is written for the site's URL;
-//! 4. `php please make:user <email> --super` creates the first administrator
-//!    *without a password*: Statamic only takes a password as a command-line
-//!    argument, and the operation never puts a secret in argv. The panel
-//!    signs the administrator in with a one-time link, which it does not
-//!    store.
+//! 4. `php please make:user <email> --super --password=...` creates the first
+//!    administrator. Without `--password` Statamic stores an *empty*
+//!    password, and it takes one only as an option, so the password travels
+//!    in the environment of the `docker exec` (`-e NAME`, never `-e
+//!    NAME=value`) and a fixed `sh -c` script expands it: it is not in the
+//!    host's argv, the request file is the only place the engine reads it
+//!    from, and it is in no result, journal or audit record. The panel
+//!    generates it and shows it once.
 //!
 //! Unlike `wordpress.install`, this operation owns what it writes, so a
 //! failure removes exactly the entries it created (kept in memory: a crash
@@ -45,7 +48,7 @@ use crate::{
         resource_lock,
         state::{self, TransactionStatus},
     },
-    wordpress_install::validate_email,
+    wordpress_install::{validate_bounded, validate_email},
 };
 
 pub const OPERATION: &str = "application.install";
@@ -57,6 +60,14 @@ const COMPOSER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_ROOT_BYTES: usize = 4096;
+const MIN_ADMIN_PASSWORD_BYTES: usize = 12;
+const MAX_ADMIN_PASSWORD_BYTES: usize = 256;
+/// The environment variable that carries the administrator's password into
+/// the container; fixed text, never built from input.
+const PASSWORD_ENV: &str = "STATAMIC_ADMIN_PASSWORD";
+/// `$1` is the administrator's address (a positional argument), the password
+/// comes from the environment.
+const MAKE_USER_SCRIPT: &str = "exec php please make:user \"$1\" --super --password=\"$STATAMIC_ADMIN_PASSWORD\" --no-interaction";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +115,7 @@ struct Plan {
     domain: String,
     application: Application,
     admin_email: String,
+    admin_password: String,
 }
 
 pub struct Request {
@@ -114,6 +126,7 @@ pub struct Request {
     domain: Domain,
     application: Application,
     admin_email: String,
+    admin_password: String,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -142,6 +155,16 @@ impl Request {
         if plan.admin_email.starts_with('-') {
             return Err(RequestError);
         }
+        validate_bounded(&plan.admin_password, MAX_ADMIN_PASSWORD_BYTES)
+            .map_err(|_| RequestError)?;
+        if plan.admin_password.len() < MIN_ADMIN_PASSWORD_BYTES
+            || plan
+                .admin_password
+                .bytes()
+                .any(|b| matches!(b, b'\n' | b'\r'))
+        {
+            return Err(RequestError);
+        }
         Ok(Self {
             container: ContainerName::parse(&plan.container)
                 .map_err(|_: RestoreRequestError| RequestError)?,
@@ -151,6 +174,7 @@ impl Request {
             domain: Domain::parse(&plan.domain).map_err(|_| RequestError)?,
             application: plan.application,
             admin_email: plan.admin_email,
+            admin_password: plan.admin_password,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -402,6 +426,7 @@ fn run_install(
         req,
         root_str,
         &[&home, &cache, "COMPOSER_NO_INTERACTION=1"],
+        &[],
         &[
             "php",
             CONTAINER_COMPOSER,
@@ -427,14 +452,8 @@ fn run_install(
         req,
         root_str,
         &[],
-        &[
-            "php",
-            "please",
-            "make:user",
-            "--super",
-            "--no-interaction",
-            &req.admin_email,
-        ],
+        &[(PASSWORD_ENV, &req.admin_password)],
+        &["sh", "-c", MAKE_USER_SCRIPT, "sh", &req.admin_email],
         SETUP_TIMEOUT,
         cancel,
     )?;
@@ -561,11 +580,13 @@ fn undo(root: &ManagedRoot, staging: &str, created: &Created) {
 
 /// `docker exec` as the site's UID in the project root; `program_and_args`
 /// never carries caller text except the validated address.
+#[allow(clippy::too_many_arguments)]
 fn exec(
     ctx: &Context<'_>,
     req: &Request,
     cwd: &str,
     env: &[&str],
+    secrets: &[(&str, &str)],
     program_and_args: &[&str],
     timeout: Duration,
     cancel: &CancellationToken,
@@ -582,10 +603,20 @@ fn exec(
         args.push("-e".into());
         args.push((*value).to_owned());
     }
+    // `-e NAME` without a value takes the value from this process's
+    // environment, so a secret is never in the argv of `docker`.
+    for (name, _) in secrets {
+        args.push("-e".into());
+        args.push((*name).to_owned());
+    }
     args.push(req.container.as_str().to_owned());
     args.extend(program_and_args.iter().map(|arg| (*arg).to_owned()));
+    let mut request = ProcessRequest::new(ctx.docker_program).args(args);
+    for (name, value) in secrets {
+        request = request.env(name, value);
+    }
     process::run(
-        &ProcessRequest::new(ctx.docker_program).args(args),
+        &request,
         &ProcessLimits {
             timeout,
             max_stdout_bytes: MAX_OUTPUT_BYTES,
@@ -630,6 +661,7 @@ mod tests {
 
     const REQUEST_ID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const OTHER_ID: &str = "223e4567-e89b-12d3-a456-426614174000";
+    const PASSWORD: &str = "correct-horse-battery-1";
 
     fn plan(root: &str, uid: u32, gid: u32) -> String {
         serde_json::json!({
@@ -640,6 +672,7 @@ mod tests {
             "domain": "example.com",
             "application": "statamic",
             "adminEmail": "admin@example.com",
+            "adminPassword": PASSWORD,
         })
         .to_string()
     }
@@ -665,9 +698,23 @@ mod tests {
                 "{to}"
             );
         }
-        // No field carries a password: an unknown one is refused.
+        // The password is required, long enough and one line.
+        for bad in [
+            "",
+            "short",
+            "twelve-chars\nsecond",
+            "twelve-chars\rx",
+            &"x".repeat(257),
+        ] {
+            assert!(
+                Request::parse(&base.replace(PASSWORD, bad), REQUEST_ID, None).is_err(),
+                "{bad:?}"
+            );
+        }
         let mut value: serde_json::Value = serde_json::from_str(&base).unwrap();
-        value["adminPassword"] = "x".into();
+        value.as_object_mut().unwrap().remove("adminPassword");
+        assert!(Request::parse(&value.to_string(), REQUEST_ID, None).is_err());
+        value["extra"] = true.into();
         assert!(Request::parse(&value.to_string(), REQUEST_ID, None).is_err());
         assert!(Request::parse(&base, "not-a-uuid", None).is_err());
     }
@@ -678,6 +725,7 @@ mod tests {
     const FAKE_DOCKER: &str = r#"#!/bin/sh
 dir=$(dirname "$0")
 echo "$@" >> "$dir/calls.log"
+echo "$STATAMIC_ADMIN_PASSWORD" >> "$dir/env.log"
 cwd=""
 prev=""
 for a in "$@"; do
@@ -792,11 +840,19 @@ exit 0
         );
         let calls = f.calls();
         assert!(calls.contains("--user"), "{calls}");
+        // The address is a positional argument of a fixed script; the
+        // password is only in the environment of `docker`, named without a
+        // value, and in no argument.
         assert!(
-            calls.contains("php please make:user --super --no-interaction admin@example.com"),
+            calls.contains("-e STATAMIC_ADMIN_PASSWORD runtime-1 sh -c exec php please make:user")
+                && calls.trim_end().ends_with("sh admin@example.com"),
             "{calls}"
         );
-        assert!(!calls.contains("--password"), "{calls}");
+        assert!(!calls.contains(PASSWORD), "{calls}");
+        let env = fs::read_to_string(f.dir.path().join("env.log")).unwrap();
+        assert!(env.lines().any(|line| line == PASSWORD), "{env}");
+        // Nothing the engine returns or records carries it.
+        assert!(!serde_json::to_string(&result).unwrap().contains(PASSWORD));
     }
 
     #[test]
