@@ -295,6 +295,9 @@ pub enum SiteCommand {
         /// The site's document root, under a content root.
         #[arg(long)]
         root: String,
+        /// The directory `open_basedir` allows: the root or an ancestor.
+        #[arg(long = "project-root")]
+        project_root: String,
         /// FrankenPHP worker mode (`true`/`false`).
         #[arg(long = "worker-mode", action = clap::ArgAction::Set)]
         worker_mode: bool,
@@ -404,6 +407,8 @@ pub enum SiteCommand {
         domain: String,
         #[arg(long)]
         root: String,
+        #[arg(long = "project-root")]
+        project_root: String,
         #[arg(long = "request-id")]
         request_id: String,
         #[arg(long = "idempotency-key")]
@@ -420,6 +425,8 @@ pub enum SiteCommand {
         to_domain: String,
         #[arg(long)]
         root: String,
+        #[arg(long = "project-root")]
+        project_root: String,
         #[arg(long = "request-id")]
         request_id: String,
         #[arg(long = "idempotency-key")]

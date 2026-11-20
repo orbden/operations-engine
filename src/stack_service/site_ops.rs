@@ -39,7 +39,7 @@ pub fn write_site_service(
             .map_err(Error::Io)?;
             root.write_atomic(
                 &service_rel(&req.runtime_id, &req.domain, "open-basedir.ini"),
-                site_open_basedir_ini(&req.config.root).as_bytes(),
+                site_open_basedir_ini(&req.config.project_root).as_bytes(),
             )
             .map_err(Error::Io)?;
             root.write_atomic(
@@ -112,7 +112,7 @@ pub fn activate_site_config(
                     runtime_id: &req.runtime_id,
                     domain: &req.domain,
                     port: req.port,
-                    root: &req.root,
+                    project_root: &req.project_root,
                     caddyfile: &req.caddyfile,
                     guard: &req.guard,
                 },
@@ -129,7 +129,7 @@ pub(crate) struct SiteActivation<'a> {
     pub runtime_id: &'a RuntimeId,
     pub domain: &'a Domain,
     pub port: u16,
-    pub root: &'a str,
+    pub project_root: &'a str,
     pub caddyfile: &'a str,
     pub guard: &'a HashGuard,
 }
@@ -156,7 +156,7 @@ pub(crate) fn activate_locked(
     // The Caddyfile is the caller's opaque, validated-in-container
     // content; open-basedir is derived from the root.
     let new_caddy = activation.caddyfile;
-    let new_basedir = site_open_basedir_ini(activation.root);
+    let new_basedir = site_open_basedir_ini(activation.project_root);
 
     // Stage the new Caddyfile next to the live one and validate it
     // inside the pool before it can take effect. A `.tmp` sibling is

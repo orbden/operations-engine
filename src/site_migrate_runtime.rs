@@ -198,6 +198,7 @@ pub struct Identity {
     pub gid: u32,
     pub port: u16,
     pub root: String,
+    pub project_root: String,
     pub worker_mode: bool,
     pub worker_count: i64,
 }

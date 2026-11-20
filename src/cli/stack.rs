@@ -210,6 +210,9 @@ pub enum StackCommand {
         /// The site's document root inside the container.
         #[arg(long = "root")]
         root: String,
+        /// The directory `open_basedir` allows: the root or an ancestor.
+        #[arg(long = "project-root")]
+        project_root: String,
         /// Enable FrankenPHP worker mode for this site (`true`/`false`).
         #[arg(long = "worker-mode", action = clap::ArgAction::Set)]
         worker_mode: bool,
@@ -231,9 +234,13 @@ pub enum StackCommand {
         domain: String,
         #[arg(long = "port")]
         port: u16,
-        /// The document root, used to regenerate `open-basedir.ini`.
+        /// The document root.
         #[arg(long = "root")]
         root: String,
+        /// The directory `open_basedir` allows, used to regenerate
+        /// `open-basedir.ini`: the root or an ancestor.
+        #[arg(long = "project-root")]
+        project_root: String,
         /// Root-owned file holding the complete new Caddyfile contents
         /// (the panel edits this file textually, so it is opaque here and
         /// validated inside the pool before it can take effect).

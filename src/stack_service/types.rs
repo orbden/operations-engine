@@ -41,6 +41,7 @@ pub enum RequestError {
     InvalidPriorHash,
     InvalidIdentity,
     InvalidRoot,
+    InvalidProjectRoot,
 }
 
 impl RequestError {
@@ -57,6 +58,9 @@ impl RequestError {
             Self::InvalidIdentity => "uid and gid must be site identities (at least 1000)",
             Self::InvalidRoot => {
                 "root must be a plain absolute path under a content root, without spaces or dot segments"
+            }
+            Self::InvalidProjectRoot => {
+                "project-root must be a plain absolute path under a content root that is the root or contains it"
             }
         }
     }

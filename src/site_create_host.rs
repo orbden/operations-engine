@@ -102,11 +102,19 @@ impl Backend for HostBackend<'_> {
     }
     fn allocate_new(&self, plan: &Plan, root: &str, key: &str) -> Result<Identity, StepError> {
         let id = key.split(':').next().ok_or_else(conflict)?;
+        // `root` is `<content root>/<domain>[/<relative root>]`; the project
+        // root, which `open_basedir` allows, is the site directory itself.
+        let [content] = self.config.content_roots.as_slice() else {
+            return Err(failed("site creation requires exactly one content root"));
+        };
+        let project_root = content.as_path().join(&plan.domain);
+        let project_root = project_root.to_string_lossy();
         let mut req = site_identity::AllocateRequest::parse(
             &plan.runtime_id,
             &plan.domain,
             None,
             root,
+            &project_root,
             plan.worker_mode,
             plan.worker_count,
             &self.config.content_roots,
@@ -134,6 +142,7 @@ impl Backend for HostBackend<'_> {
             gid: result.gid,
             port: result.port,
             root: result.root,
+            project_root: result.project_root,
             worker_mode: result.worker_mode,
             worker_count: result.worker_count,
         })
@@ -318,7 +327,7 @@ impl Backend for HostBackend<'_> {
             ),
             (
                 rel(&format!("{base}/open-basedir.ini")),
-                stack_service::site_open_basedir_ini(&proof.root),
+                stack_service::site_open_basedir_ini(&proof.project_root),
             ),
         ]);
         match stack_service::remove_site_service(self.stack, &req, &CancellationToken::default()) {
@@ -428,6 +437,7 @@ impl HostBackend<'_> {
                 || current.port != proof.port
                 || current.os_user != proof.os_user
                 || current.root != proof.root
+                || current.project_root != proof.project_root
                 || current.worker_mode != proof.worker_mode
                 || current.worker_count != proof.worker_count
             {

@@ -146,6 +146,7 @@ fn write_req(id: &str, key: Option<&str>) -> WriteSiteServiceRequest {
         10123,
         9000,
         "/var/www/example".into(),
+        "/var/www/example".into(),
         true,
         2,
         &content_roots(),
@@ -153,6 +154,49 @@ fn write_req(id: &str, key: Option<&str>) -> WriteSiteServiceRequest {
         key,
     )
     .unwrap()
+}
+
+#[test]
+fn open_basedir_follows_the_project_root_not_the_document_root() {
+    let req = WriteSiteServiceRequest::parse(
+        "fp1-php83",
+        "example.test",
+        10123,
+        10123,
+        9000,
+        "/var/www/example/public".into(),
+        "/var/www/example".into(),
+        false,
+        1,
+        &content_roots(),
+        ID,
+        None,
+    )
+    .unwrap();
+    assert_eq!(req.config.root, "/var/www/example/public");
+    assert!(
+        site_open_basedir_ini(&req.config.project_root)
+            .contains("open_basedir = /var/www/example:/tmp:")
+    );
+    // A project root that does not contain the root is refused.
+    assert_eq!(
+        WriteSiteServiceRequest::parse(
+            "fp1-php83",
+            "example.test",
+            10123,
+            10123,
+            9000,
+            "/var/www/example/public".into(),
+            "/var/www/other".into(),
+            false,
+            1,
+            &content_roots(),
+            ID,
+            None,
+        )
+        .err(),
+        Some(RequestError::InvalidProjectRoot)
+    );
 }
 
 fn sample_caddyfile(port: u16) -> String {
@@ -171,6 +215,7 @@ fn activate_req(hash: Option<&str>, id: &str, key: Option<&str>) -> ActivateSite
         "fp1-php83",
         "example.test",
         9000,
+        "/var/www/example".into(),
         "/var/www/example".into(),
         sample_caddyfile(9000),
         hash,
@@ -240,6 +285,7 @@ fn write_site_service_precreates_the_runtime_log_for_the_site_identity() {
         uid,
         gid,
         9000,
+        "/var/www/example".into(),
         "/var/www/example".into(),
         false,
         2,
@@ -462,6 +508,7 @@ fn a_probe_failure_restores_the_previous_config_and_restarts_it() {
         "fp1-php83",
         "example.test",
         9100, // a changed port, so the file content differs
+        "/var/www/example".into(),
         "/var/www/example".into(),
         sample_caddyfile(9100),
         Some(live_hash.as_str()),
@@ -728,6 +775,7 @@ fn site_requests_reject_malformed_fields() {
             "example.test",
             0,
             "/var/www/r".into(),
+            "/var/www/r".into(),
             "x {}".into(),
             None,
             &content_roots(),
@@ -743,6 +791,7 @@ fn site_requests_reject_malformed_fields() {
             "-bad.test",
             80,
             "/var/www/r".into(),
+            "/var/www/r".into(),
             "x {}".into(),
             None,
             &content_roots(),
@@ -757,6 +806,7 @@ fn site_requests_reject_malformed_fields() {
             "fp1-php83",
             "example.test",
             80,
+            "/var/www/r".into(),
             "/var/www/r".into(),
             "x {}".into(),
             Some("zz"),
@@ -807,6 +857,7 @@ fn site_requests_reject_hostile_roots() {
                 10123,
                 9000,
                 (*root).into(),
+                (*root).into(),
                 true,
                 2,
                 &content_roots(),
@@ -822,6 +873,7 @@ fn site_requests_reject_hostile_roots() {
                 "fp1-php83",
                 "example.test",
                 9000,
+                (*root).into(),
                 (*root).into(),
                 "x {}".into(),
                 None,
@@ -851,6 +903,7 @@ fn site_requests_accept_the_roots_the_panel_sends() {
                 10123,
                 9000,
                 root.into(),
+                root.into(),
                 false,
                 1,
                 &content_roots(),
@@ -865,6 +918,7 @@ fn site_requests_accept_the_roots_the_panel_sends() {
                 "fp1-php83",
                 "example.test",
                 9000,
+                root.into(),
                 root.into(),
                 "x {}".into(),
                 None,
@@ -884,6 +938,7 @@ fn site_requests_accept_the_roots_the_panel_sends() {
             10123,
             10123,
             9000,
+            "/var/www/example.test".into(),
             "/var/www/example.test".into(),
             false,
             1,

@@ -33,7 +33,7 @@
 //! live process can never keep a freed uid.
 //!
 //! The record is the file the panel parses: `OS_USER=`, `UID=`, `GID=`,
-//! `PORT=`, `ROOT=`, `WORKER_MODE=`, `WORKER_COUNT=`, one per line, in
+//! `PORT=`, `ROOT=`, `PROJECT_ROOT=`, `WORKER_MODE=`, `WORKER_COUNT=`, one per line, in
 //! `<runtime root>/<runtime id>/<domain>.identity`, mode `0644`.
 
 use crate::clock::unix_now_secs;
@@ -92,6 +92,7 @@ pub enum RequestError {
     InvalidDomain,
     InvalidOsUser,
     InvalidRoot,
+    InvalidProjectRoot,
     InvalidWorkerCount,
     InvalidRequestId,
     InvalidIdempotencyKey,
@@ -105,6 +106,9 @@ impl RequestError {
             Self::InvalidOsUser => "os-user must be wcp-site- followed by 16 lowercase hex digits",
             Self::InvalidRoot => {
                 "root must be a plain absolute path without spaces or dot segments"
+            }
+            Self::InvalidProjectRoot => {
+                "project-root must be a plain absolute path that is the root or contains it"
             }
             Self::InvalidWorkerCount => "worker-count must be between 1 and 64",
             Self::InvalidRequestId => "request-id is not a canonical UUID",
@@ -158,6 +162,26 @@ pub(crate) fn validate_root(root: &str, content_roots: &[TrustedRoot]) -> Result
     Ok(())
 }
 
+/// The project root of a site: the directory `open_basedir` allows. It is a
+/// valid root of its own and either is the document root or contains it, so a
+/// Composer application can keep `vendor/` and `config/` above `public/`.
+pub(crate) fn validate_project_root(
+    root: &str,
+    project_root: &str,
+    content_roots: &[TrustedRoot],
+) -> Result<(), RequestError> {
+    validate_root(project_root, content_roots)?;
+    let contains = root == project_root
+        || root
+            .strip_prefix(project_root)
+            .is_some_and(|rest| rest.starts_with('/'));
+    if contains {
+        Ok(())
+    } else {
+        Err(RequestError::InvalidProjectRoot)
+    }
+}
+
 fn validate_worker_count(count: i64) -> Result<(), RequestError> {
     if (1..=MAX_WORKER_COUNT).contains(&count) {
         Ok(())
@@ -182,6 +206,8 @@ fn parse_ids(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SiteSettings {
     pub root: String,
+    /// The directory `open_basedir` allows; the root itself or an ancestor.
+    pub project_root: String,
     pub worker_mode: bool,
     pub worker_count: i64,
 }
@@ -206,6 +232,7 @@ impl AllocateRequest {
         domain: &str,
         os_user: Option<&str>,
         root: &str,
+        project_root: &str,
         worker_mode: bool,
         worker_count: i64,
         content_roots: &[TrustedRoot],
@@ -213,6 +240,7 @@ impl AllocateRequest {
         key: Option<&str>,
     ) -> Result<Self, RequestError> {
         validate_root(root, content_roots)?;
+        validate_project_root(root, project_root, content_roots)?;
         validate_worker_count(worker_count)?;
         let (request_id, idempotency_key) = parse_ids(request_id, key)?;
         let os_user = os_user
@@ -229,6 +257,7 @@ impl AllocateRequest {
             require_absent: false,
             settings: SiteSettings {
                 root: root.to_owned(),
+                project_root: project_root.to_owned(),
                 worker_mode,
                 worker_count,
             },
@@ -270,6 +299,7 @@ pub struct UpdateRequest {
     pub runtime_id: RuntimeId,
     pub domain: Domain,
     pub root: String,
+    pub project_root: String,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -279,16 +309,19 @@ impl UpdateRequest {
         runtime_id: &str,
         domain: &str,
         root: &str,
+        project_root: &str,
         content_roots: &[TrustedRoot],
         request_id: &str,
         key: Option<&str>,
     ) -> Result<Self, RequestError> {
         validate_root(root, content_roots)?;
+        validate_project_root(root, project_root, content_roots)?;
         let (request_id, idempotency_key) = parse_ids(request_id, key)?;
         Ok(Self {
             runtime_id: RuntimeId::parse(runtime_id).map_err(|_| RequestError::InvalidRuntimeId)?,
             domain: Domain::parse(domain).map_err(|_| RequestError::InvalidDomain)?,
             root: root.to_owned(),
+            project_root: project_root.to_owned(),
             request_id,
             idempotency_key,
         })
@@ -300,6 +333,7 @@ pub struct RenameRequest {
     pub from_domain: Domain,
     pub to_domain: Domain,
     pub root: String,
+    pub project_root: String,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -311,17 +345,20 @@ impl RenameRequest {
         from_domain: &str,
         to_domain: &str,
         root: &str,
+        project_root: &str,
         content_roots: &[TrustedRoot],
         request_id: &str,
         key: Option<&str>,
     ) -> Result<Self, RequestError> {
         validate_root(root, content_roots)?;
+        validate_project_root(root, project_root, content_roots)?;
         let (request_id, idempotency_key) = parse_ids(request_id, key)?;
         Ok(Self {
             runtime_id: RuntimeId::parse(runtime_id).map_err(|_| RequestError::InvalidRuntimeId)?,
             from_domain: Domain::parse(from_domain).map_err(|_| RequestError::InvalidDomain)?,
             to_domain: Domain::parse(to_domain).map_err(|_| RequestError::InvalidDomain)?,
             root: root.to_owned(),
+            project_root: project_root.to_owned(),
             request_id,
             idempotency_key,
         })
@@ -341,12 +378,13 @@ pub struct IdentityRecord {
 impl IdentityRecord {
     fn render(&self) -> String {
         format!(
-            "OS_USER={}\nUID={}\nGID={}\nPORT={}\nROOT={}\nWORKER_MODE={}\nWORKER_COUNT={}\n",
+            "OS_USER={}\nUID={}\nGID={}\nPORT={}\nROOT={}\nPROJECT_ROOT={}\nWORKER_MODE={}\nWORKER_COUNT={}\n",
             self.os_user,
             self.uid,
             self.gid,
             self.port,
             self.settings.root,
+            self.settings.project_root,
             self.settings.worker_mode,
             self.settings.worker_count,
         )
@@ -368,6 +406,7 @@ impl IdentityRecord {
             port: field("PORT")?.parse().ok()?,
             settings: SiteSettings {
                 root: field("ROOT")?.to_owned(),
+                project_root: field("PROJECT_ROOT")?.to_owned(),
                 worker_mode: field("WORKER_MODE")? == "true",
                 worker_count: field("WORKER_COUNT")?.parse().ok()?,
             },
@@ -385,6 +424,7 @@ pub struct IdentityResult {
     pub gid: u32,
     pub port: u16,
     pub root: String,
+    pub project_root: String,
     pub worker_mode: bool,
     pub worker_count: i64,
     /// This call created the account (a repeat, or a migration that reuses
@@ -845,6 +885,7 @@ fn result_of(
         gid: record.gid,
         port: record.port,
         root: record.settings.root.clone(),
+        project_root: record.settings.project_root.clone(),
         worker_mode: record.settings.worker_mode,
         worker_count: record.settings.worker_count,
         user_created,
@@ -1019,7 +1060,7 @@ pub fn release(
     )
 }
 
-/// Changes only the document root of an existing record.
+/// Changes only the document root and project root of an existing record.
 pub fn update(
     ctx: &Context<'_>,
     req: &UpdateRequest,
@@ -1034,9 +1075,11 @@ pub fn update(
             let runtime = ManagedRoot::open(ctx.runtime_root).map_err(Error::Io)?;
             let mut record =
                 read_record(&runtime, &req.runtime_id, &req.domain)?.ok_or(Error::RecordMissing)?;
-            let changed = record.settings.root != req.root;
+            let changed = record.settings.root != req.root
+                || record.settings.project_root != req.project_root;
             if changed {
                 record.settings.root = req.root.clone();
+                record.settings.project_root = req.project_root.clone();
                 write_record(&runtime, &req.runtime_id, &req.domain, &record)?;
             }
             Ok(result_of(
@@ -1070,6 +1113,7 @@ pub fn rename(
             let record = match read_record(&runtime, &req.runtime_id, &req.from_domain)? {
                 Some(mut moved) => {
                     moved.settings.root = req.root.clone();
+                    moved.settings.project_root = req.project_root.clone();
                     if req.from_domain != req.to_domain
                         && existing.as_ref().is_some_and(|other| *other != moved)
                     {
@@ -1079,7 +1123,10 @@ pub fn rename(
                 }
                 None => match existing {
                     // Already moved by an earlier attempt.
-                    Some(done) if done.settings.root == req.root => {
+                    Some(done)
+                        if done.settings.root == req.root
+                            && done.settings.project_root == req.project_root =>
+                    {
                         return Ok(result_of(
                             &req.runtime_id,
                             &req.to_domain,
@@ -1371,6 +1418,7 @@ mod tests {
                 domain,
                 None,
                 &self.root(domain),
+                &self.root(domain),
                 false,
                 4,
                 std::slice::from_ref(&self.content),
@@ -1450,8 +1498,9 @@ mod tests {
         assert_eq!(
             record,
             format!(
-                "OS_USER={}\nUID=10000\nGID=10000\nPORT=9000\nROOT={}\nWORKER_MODE=false\nWORKER_COUNT=4\n",
+                "OS_USER={}\nUID=10000\nGID=10000\nPORT=9000\nROOT={}\nPROJECT_ROOT={}\nWORKER_MODE=false\nWORKER_COUNT=4\n",
                 result.os_user,
+                fixture.root("a.test"),
                 fixture.root("a.test")
             )
         );
@@ -1571,6 +1620,7 @@ mod tests {
                 "a.test",
                 None,
                 &fixture.root("a.test"),
+                &fixture.root("a.test"),
                 true,
                 8,
                 std::slice::from_ref(&fixture.content),
@@ -1615,6 +1665,7 @@ mod tests {
                 "a.test",
                 Some(&source.os_user),
                 &fixture.root("a.test"),
+                &fixture.root("a.test"),
                 false,
                 4,
                 std::slice::from_ref(&fixture.content),
@@ -1652,6 +1703,7 @@ mod tests {
                 "a.test",
                 Some("wcp-site-0123456789abcdef"),
                 &fixture.root("a.test"),
+                &fixture.root("a.test"),
                 false,
                 4,
                 std::slice::from_ref(&fixture.content),
@@ -1675,6 +1727,7 @@ mod tests {
                     "fp1-php83",
                     "a.test",
                     Some(name),
+                    &fixture.root("a.test"),
                     &fixture.root("a.test"),
                     false,
                     4,
@@ -1757,6 +1810,7 @@ mod tests {
                 from,
                 to,
                 &fixture.root(to),
+                &fixture.root(to),
                 std::slice::from_ref(&fixture.content),
                 id,
                 None,
@@ -1820,6 +1874,7 @@ mod tests {
                 "a.test",
                 "b.test",
                 &fixture.root("b.test"),
+                &fixture.root("b.test"),
                 std::slice::from_ref(&fixture.content),
                 ID3,
                 None,
@@ -1844,6 +1899,7 @@ mod tests {
                 "fp1-php83",
                 "a.test",
                 &root,
+                &root,
                 std::slice::from_ref(&fixture.content),
                 ID2,
                 None,
@@ -1863,6 +1919,7 @@ mod tests {
                 "fp1-php83",
                 "none.test",
                 &root,
+                &root,
                 std::slice::from_ref(&fixture.content),
                 ID3,
                 None,
@@ -1873,6 +1930,67 @@ mod tests {
         .unwrap_err();
         assert!(matches!(missing, Error::RecordMissing));
         assert_eq!(missing.protocol().0, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn project_roots_are_the_root_or_an_ancestor_under_a_content_root() {
+        let content = [TrustedRoot::parse("/var/www").unwrap()];
+        for (root, project) in [
+            ("/var/www/x/public", "/var/www/x/public"),
+            ("/var/www/x/public", "/var/www/x"),
+            ("/var/www/x/web/sub", "/var/www/x"),
+            ("/var/www/sites/abc/current", "/var/www/sites/abc"),
+        ] {
+            assert!(
+                validate_project_root(root, project, &content).is_ok(),
+                "{root} in {project}"
+            );
+        }
+        for (root, project, error) in [
+            // The content root itself would open every site.
+            ("/var/www/x/public", "/var/www", RequestError::InvalidRoot),
+            ("/var/www/x/public", "/", RequestError::InvalidRoot),
+            // A sibling, a prefix that is not a path boundary, a descendant.
+            (
+                "/var/www/x/public",
+                "/var/www/y",
+                RequestError::InvalidProjectRoot,
+            ),
+            (
+                "/var/www/xy/public",
+                "/var/www/x",
+                RequestError::InvalidProjectRoot,
+            ),
+            (
+                "/var/www/x",
+                "/var/www/x/public",
+                RequestError::InvalidProjectRoot,
+            ),
+            // Not a plain path.
+            (
+                "/var/www/x/public",
+                "/var/www/x/..",
+                RequestError::InvalidRoot,
+            ),
+            (
+                "/var/www/x/public",
+                "/var/www/x/",
+                RequestError::InvalidRoot,
+            ),
+            ("/var/www/x/public", "var/www/x", RequestError::InvalidRoot),
+            (
+                "/var/www/x/public",
+                "/var/www/x y",
+                RequestError::InvalidRoot,
+            ),
+            ("/var/www/x/public", "/etc", RequestError::InvalidRoot),
+        ] {
+            assert_eq!(
+                validate_project_root(root, project, &content),
+                Err(error),
+                "{root} in {project}"
+            );
+        }
     }
 
     #[test]
@@ -1916,6 +2034,7 @@ mod tests {
             port: 9007,
             settings: SiteSettings {
                 root: "/var/www/x/public".into(),
+                project_root: "/var/www/x".into(),
                 worker_mode: true,
                 worker_count: 6,
             },
