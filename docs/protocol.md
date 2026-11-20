@@ -1381,7 +1381,13 @@ The password and generated SQL travel only over stdin.
 `db provision-postgres-user` creates a validated login role and may grant it
 access to one validated database. The `postgres` role and the reserved `pg_`
 namespace are rejected. Role creation and the optional grant share one SQL
-transaction. Root and user passwords, together with generated SQL, travel only
+transaction. With a database, the role also gets `GRANT ALL ON SCHEMA public` in
+that database, because PostgreSQL 15 and later let only the database owner
+create objects there; the database owner is not changed. That grant runs in the
+same `psql` session right after the commit (`\connect` cannot run inside a
+transaction), so a failure of it fails the operation (recorded and replayed as
+failed) while the role and its database grant already exist: the caller undoes
+them with `db.dropPostgresUser`. Root and user passwords, together with generated SQL, travel only
 over stdin and never appear in process argv or persisted transaction state.
 
 ## `db.dropPostgresUser`
