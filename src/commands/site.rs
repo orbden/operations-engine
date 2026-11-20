@@ -204,6 +204,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             domain,
             os_user,
             root,
+            project_root,
             worker_mode,
             worker_count,
             request_id,
@@ -213,6 +214,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             &domain,
             os_user.as_deref(),
             &root,
+            &project_root,
             worker_mode,
             worker_count,
             &request_id,
@@ -235,12 +237,14 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             runtime_id,
             domain,
             root,
+            project_root,
             request_id,
             idempotency_key,
         } => identity::update(
             &runtime_id,
             &domain,
             &root,
+            &project_root,
             &request_id,
             idempotency_key.as_deref(),
         ),
@@ -249,6 +253,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             from_domain,
             to_domain,
             root,
+            project_root,
             request_id,
             idempotency_key,
         } => identity::rename(
@@ -256,6 +261,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             &from_domain,
             &to_domain,
             &root,
+            &project_root,
             &request_id,
             idempotency_key.as_deref(),
         ),
@@ -282,6 +288,7 @@ mod identity {
         domain: &str,
         os_user: Option<&str>,
         root: &str,
+        project_root: &str,
         worker_mode: bool,
         worker_count: i64,
         request_id: &str,
@@ -295,6 +302,7 @@ mod identity {
                     domain,
                     os_user,
                     root,
+                    project_root,
                     worker_mode,
                     worker_count,
                     &config.content_roots,
@@ -309,7 +317,15 @@ mod identity {
         }
         #[cfg(not(unix))]
         {
-            let _ = (runtime_id, domain, os_user, root, worker_mode, worker_count);
+            let _ = (
+                runtime_id,
+                domain,
+                os_user,
+                root,
+                project_root,
+                worker_mode,
+                worker_count,
+            );
             unsupported("site.allocateIdentity", request_id, key)
         }
     }
@@ -343,6 +359,7 @@ mod identity {
         runtime_id: &str,
         domain: &str,
         root: &str,
+        project_root: &str,
         request_id: &str,
         key: Option<&str>,
     ) -> Result<Response, ResponseBuildError> {
@@ -353,6 +370,7 @@ mod identity {
                     runtime_id,
                     domain,
                     root,
+                    project_root,
                     &config.content_roots,
                     request_id,
                     key,
@@ -365,7 +383,7 @@ mod identity {
         }
         #[cfg(not(unix))]
         {
-            let _ = (runtime_id, domain, root);
+            let _ = (runtime_id, domain, root, project_root);
             unsupported("site.updateIdentity", request_id, key)
         }
     }
@@ -375,6 +393,7 @@ mod identity {
         from_domain: &str,
         to_domain: &str,
         root: &str,
+        project_root: &str,
         request_id: &str,
         key: Option<&str>,
     ) -> Result<Response, ResponseBuildError> {
@@ -386,6 +405,7 @@ mod identity {
                     from_domain,
                     to_domain,
                     root,
+                    project_root,
                     &config.content_roots,
                     request_id,
                     key,
@@ -398,7 +418,7 @@ mod identity {
         }
         #[cfg(not(unix))]
         {
-            let _ = (runtime_id, from_domain, to_domain, root);
+            let _ = (runtime_id, from_domain, to_domain, root, project_root);
             unsupported("site.renameIdentity", request_id, key)
         }
     }

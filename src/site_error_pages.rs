@@ -90,6 +90,7 @@ struct RawRequest {
     domain: String,
     port: u16,
     root: String,
+    project_root: String,
     enabled: bool,
     not_found_html: String,
     server_error_html: String,
@@ -101,6 +102,7 @@ pub struct SetErrorPagesRequest {
     pub domain: Domain,
     pub port: u16,
     pub root: String,
+    pub project_root: String,
     pub enabled: bool,
     not_found_html: String,
     server_error_html: String,
@@ -132,6 +134,8 @@ impl SetErrorPagesRequest {
         }
         crate::site_identity::validate_root(&raw.root, content_roots)
             .map_err(|_| request(RequestError::InvalidRoot))?;
+        crate::site_identity::validate_project_root(&raw.root, &raw.project_root, content_roots)
+            .map_err(|_| request(RequestError::InvalidProjectRoot))?;
         // A disabled request ignores the HTML, as the panel always has.
         if raw.enabled && !(valid_html(&raw.not_found_html) && valid_html(&raw.server_error_html)) {
             return Err(RequestParseError::InvalidHtml);
@@ -147,6 +151,7 @@ impl SetErrorPagesRequest {
             domain,
             port: raw.port,
             root: raw.root,
+            project_root: raw.project_root,
             enabled: raw.enabled,
             not_found_html: raw.not_found_html,
             server_error_html: raw.server_error_html,
@@ -521,7 +526,7 @@ pub fn set_error_pages(
                     runtime_id: &req.runtime_id,
                     domain: &req.domain,
                     port: req.port,
-                    root: &req.root,
+                    project_root: &req.project_root,
                     caddyfile: &updated,
                     guard: &guard,
                 },
@@ -676,6 +681,7 @@ mod tests {
                 "domain": "site-a.test",
                 "port": 9000,
                 "root": self.webroot().to_str().unwrap(),
+                "projectRoot": self.webroot().to_str().unwrap(),
                 "enabled": enabled,
                 "notFoundHtml": not_found,
                 "serverErrorHtml": server_error,
@@ -742,6 +748,7 @@ mod tests {
             ("domain", "A b", RequestError::InvalidDomain),
             ("runtimeId", "../x", RequestError::InvalidRuntimeId),
             ("root", "/etc", RequestError::InvalidRoot),
+            ("projectRoot", "/etc", RequestError::InvalidProjectRoot),
         ] {
             let mut value: serde_json::Value =
                 serde_json::from_str(&f.json(true, NOT_FOUND, SERVER_ERROR)).unwrap();
@@ -834,6 +841,7 @@ mod tests {
             "domain": "site-a.test",
             "port": 9000,
             "root": site.join("current").to_str().unwrap(),
+            "projectRoot": site.to_str().unwrap(),
             "enabled": true,
             "notFoundHtml": NOT_FOUND,
             "serverErrorHtml": SERVER_ERROR,

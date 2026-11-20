@@ -90,10 +90,11 @@ pub(crate) fn site_run_script(uid: u32, gid: u32, container_dir: &str) -> String
     )
 }
 
-/// Ported from the panel's `build_site_open_basedir_ini`.
-pub(crate) fn site_open_basedir_ini(root: &str) -> String {
+/// Ported from the panel's `build_site_open_basedir_ini`; the allowed
+/// directory is the site's project root, not its document root.
+pub(crate) fn site_open_basedir_ini(project_root: &str) -> String {
     format!(
-        "; Managed by OrbDen - do not edit manually\nopen_basedir = {root}:/tmp:/var/tmp:/run/valkey/valkey.sock\n"
+        "; Managed by OrbDen - do not edit manually\nopen_basedir = {project_root}:/tmp:/var/tmp:/run/valkey/valkey.sock\n"
     )
 }
 
@@ -102,6 +103,9 @@ pub(crate) fn site_open_basedir_ini(root: &str) -> String {
 pub struct SiteConfig {
     pub port: u16,
     pub root: String,
+    /// The directory `open_basedir` allows: the document root or an ancestor
+    /// that also holds `vendor/` and `config/` of a Composer application.
+    pub project_root: String,
     pub worker_mode: bool,
     pub worker_count: i64,
 }
@@ -117,9 +121,19 @@ pub(super) fn validate_site_root(
     crate::site_identity::validate_root(root, content_roots).map_err(|_| RequestError::InvalidRoot)
 }
 
+pub(super) fn validate_site_project_root(
+    root: &str,
+    project_root: &str,
+    content_roots: &[TrustedRoot],
+) -> Result<(), RequestError> {
+    crate::site_identity::validate_project_root(root, project_root, content_roots)
+        .map_err(|_| RequestError::InvalidProjectRoot)
+}
+
 pub(super) fn parse_site_config(
     port: u16,
     root: String,
+    project_root: String,
     worker_mode: bool,
     worker_count: i64,
     content_roots: &[TrustedRoot],
@@ -128,9 +142,11 @@ pub(super) fn parse_site_config(
         return Err(RequestError::InvalidPort);
     }
     validate_site_root(&root, content_roots)?;
+    validate_site_project_root(&root, &project_root, content_roots)?;
     Ok(SiteConfig {
         port,
         root,
+        project_root,
         worker_mode,
         worker_count,
     })
@@ -165,6 +181,7 @@ impl WriteSiteServiceRequest {
         gid: u32,
         port: u16,
         root: String,
+        project_root: String,
         worker_mode: bool,
         worker_count: i64,
         content_roots: &[TrustedRoot],
@@ -180,7 +197,14 @@ impl WriteSiteServiceRequest {
             domain,
             uid,
             gid,
-            config: parse_site_config(port, root, worker_mode, worker_count, content_roots)?,
+            config: parse_site_config(
+                port,
+                root,
+                project_root,
+                worker_mode,
+                worker_count,
+                content_roots,
+            )?,
             request_id,
             idempotency_key,
         })
@@ -195,6 +219,9 @@ pub struct ActivateSiteConfigRequest {
     /// The document root, for regenerating `open-basedir.ini` (which is
     /// never edited textually, only derived from the root).
     pub root: String,
+    /// The directory `open_basedir` allows, regenerated into
+    /// `open-basedir.ini` together with the root.
+    pub project_root: String,
     /// The complete new `Caddyfile`, opaque to the engine: the panel edits
     /// this file textually (error pages, PHP settings), so it cannot be
     /// regenerated from typed parameters. Validated inside the pool before
@@ -214,6 +241,7 @@ impl ActivateSiteConfigRequest {
         domain: &str,
         port: u16,
         root: String,
+        project_root: String,
         caddyfile: String,
         expected_prior_hash: Option<&str>,
         content_roots: &[TrustedRoot],
@@ -227,6 +255,7 @@ impl ActivateSiteConfigRequest {
             return Err(RequestError::InvalidPort);
         }
         validate_site_root(&root, content_roots)?;
+        validate_site_project_root(&root, &project_root, content_roots)?;
         let guard = match expected_prior_hash {
             None => HashGuard::Absent,
             Some(value) => HashGuard::Sha256(
@@ -239,6 +268,7 @@ impl ActivateSiteConfigRequest {
             domain,
             port,
             root,
+            project_root,
             caddyfile,
             guard,
             request_id,

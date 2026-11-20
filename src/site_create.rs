@@ -509,6 +509,7 @@ mod tests {
             gid: 10000,
             port: 9000,
             root: "/var/www/example.test/public".into(),
+            project_root: "/var/www/example.test".into(),
             worker_mode: false,
             worker_count: 4,
         }

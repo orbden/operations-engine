@@ -24,6 +24,7 @@ fn identity(port: u16) -> Identity {
         gid: 20001,
         port,
         root: "/var/www/shop.example.test/public".into(),
+        project_root: "/var/www/shop.example.test".into(),
         worker_mode: false,
         worker_count: 1,
     }
