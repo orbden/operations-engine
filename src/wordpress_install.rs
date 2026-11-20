@@ -95,7 +95,7 @@ pub struct Request {
 #[derive(Clone, Copy, Debug)]
 pub struct RequestError;
 
-fn validate_bounded(value: &str, max: usize) -> Result<(), RequestError> {
+pub(crate) fn validate_bounded(value: &str, max: usize) -> Result<(), RequestError> {
     if value.is_empty() || value.len() > max || value.as_bytes().contains(&0) {
         return Err(RequestError);
     }
