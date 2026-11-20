@@ -352,7 +352,7 @@ fn installed_version(root: &Path) -> Result<String, Error> {
 }
 
 /// `5.2.3`, `5.3.0-rc1`: digits, dots and a short alphanumeric suffix.
-fn plain_version(value: &str) -> bool {
+pub(crate) fn plain_version(value: &str) -> bool {
     let core = value.split('-').next().unwrap_or_default();
     let parts: Vec<&str> = core.split('.').collect();
     (2..=4).contains(&parts.len())

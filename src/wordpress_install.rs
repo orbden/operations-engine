@@ -107,7 +107,7 @@ fn validate_bounded(value: &str, max: usize) -> Result<(), RequestError> {
 /// install` itself is the authority on whether the address is actually
 /// usable; this only keeps obviously-malformed input from ever reaching
 /// argv.
-fn validate_email(value: &str) -> Result<(), RequestError> {
+pub(crate) fn validate_email(value: &str) -> Result<(), RequestError> {
     if value.is_empty()
         || value.len() > MAX_EMAIL_BYTES
         || value.bytes().any(|b| b == 0 || b.is_ascii_whitespace())

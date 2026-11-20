@@ -127,6 +127,26 @@ pub fn charset_ok(
     value.len() <= max && bytes.next().is_some_and(first) && bytes.all(rest)
 }
 
+/// `original` with each `KEY=value` set: the first line starting with `KEY=`
+/// is replaced, otherwise the line is appended. Other lines stay byte for byte;
+/// line endings are normalised to `\n` and the text ends with one. A value
+/// holding CR, LF or NUL is refused.
+pub fn set_env_lines(original: &str, updates: &[(&str, &str)]) -> io::Result<String> {
+    let mut lines = original.lines().map(str::to_owned).collect::<Vec<_>>();
+    for (key, value) in updates {
+        if value.contains(['\r', '\n', '\0']) {
+            return Err(io::Error::other("invalid env pointer"));
+        }
+        let prefix = format!("{key}=");
+        if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
+            *line = format!("{key}={value}");
+        } else {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
 /// Sets `KEY=value` lines in a Compose `.env` file and replaces it atomically
 /// (a private temporary file next to it, `fsync`, original permissions, rename).
 ///
@@ -147,19 +167,7 @@ pub fn update_env_atomic(
         return Err(io::Error::other("compose env is not a regular file"));
     }
     let original = fs::read_to_string(path)?;
-    let mut lines = original.lines().map(str::to_owned).collect::<Vec<_>>();
-    for (key, value) in updates {
-        if value.contains(['\r', '\n', '\0']) {
-            return Err(io::Error::other("invalid env pointer"));
-        }
-        let prefix = format!("{key}=");
-        if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&prefix)) {
-            *line = format!("{key}={value}");
-        } else {
-            lines.push(format!("{key}={value}"));
-        }
-    }
-    let content = format!("{}\n", lines.join("\n"));
+    let content = set_env_lines(&original, updates)?;
     let temporary = path.with_extension(temp_extension);
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -240,6 +248,18 @@ mod tests {
 
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn set_env_lines_replaces_appends_and_refuses_control_bytes() {
+        assert_eq!(
+            set_env_lines("# c\nA=1\r\nA=2\nB=x\n", &[("A", "9"), ("C", "new")]).unwrap(),
+            "# c\nA=9\nA=2\nB=x\nC=new\n"
+        );
+        assert_eq!(set_env_lines("", &[("A", "1")]).unwrap(), "A=1\n");
+        for bad in ["a\nb", "a\rb", "a\0b"] {
+            assert!(set_env_lines("A=1\n", &[("A", bad)]).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn charset_ok_checks_length_first_byte_and_the_rest() {

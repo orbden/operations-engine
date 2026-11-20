@@ -220,6 +220,7 @@ pub fn resource_scope(
         "drupal.clone" => Some("drupal-clone"),
         "wordpress.import" => Some("wordpress-import"),
         "wordpress.install" => Some("wordpress-install"),
+        "application.install" => Some("application-install"),
         "wordpress.updateCore" | "wordpress.updatePlugins" | "wordpress.updateThemes" => {
             Some("wordpress-update")
         }

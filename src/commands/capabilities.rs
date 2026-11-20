@@ -183,6 +183,7 @@ pub const OPERATIONS: &[&str] = &[
     "permissions.fixOwnership",
     "permissions.fixWorldWritable",
     "wordpress.cleanup",
+    "application.install",
     "wordpress.install",
     "wordpress.import",
     "wordpress.clone",

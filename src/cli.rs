@@ -93,6 +93,12 @@ pub enum Command {
         command: PermissionsCommand,
     },
 
+    /// Install a Composer application into an empty site.
+    Application {
+        #[command(subcommand)]
+        command: ApplicationCommand,
+    },
+
     /// Bounded WordPress application operations.
     Wordpress {
         #[command(subcommand)]
@@ -175,6 +181,7 @@ impl Command {
             Self::Compose { command } => command.operation(),
             Self::Meilisearch { command } => command.operation(),
             Self::Permissions { command } => command.operation(),
+            Self::Application { command } => command.operation(),
             Self::Wordpress { command } => command.operation(),
             Self::Drupal { command } => command.operation(),
             Self::Joomla { command } => command.operation(),
@@ -619,6 +626,7 @@ impl CmsCommand {
 }
 
 mod agent;
+mod application;
 mod data;
 mod ingress;
 mod site;
@@ -627,6 +635,7 @@ mod system;
 mod wordpress;
 
 pub use agent::*;
+pub use application::*;
 pub use data::*;
 pub use ingress::*;
 pub use site::*;
