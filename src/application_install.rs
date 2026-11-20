@@ -4,8 +4,9 @@
 //! `.user.ini`). Per-resource lock, idempotency, transaction and audit follow
 //! `wordpress.install`.
 //!
-//! Only Statamic is installed so far. Its steps, as the site's UID inside the
-//! runtime container:
+//! Statamic, Craft CMS 5 and TYPO3 are installed. Statamic's steps, as the
+//! site's UID inside the runtime container (Craft and TYPO3 share steps 1 and
+//! 2 and differ after them, see their functions below):
 //!
 //! 1. `composer create-project` into a hidden directory of the project root
 //!    (Composer refuses a directory that is not empty);
@@ -34,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     clock::unix_now_secs,
-    db_restore::{ContainerName, RestoreRequestError},
+    db_restore::{ContainerName, DatabaseName, RestoreRequestError},
     error::ErrorCode,
     filesystem::ManagedRoot,
     mutation::preflight,
@@ -65,43 +66,70 @@ const MAX_ADMIN_PASSWORD_BYTES: usize = 256;
 /// The environment variable that carries the administrator's password into
 /// the container; fixed text, never built from input.
 const PASSWORD_ENV: &str = "STATAMIC_ADMIN_PASSWORD";
+const CRAFT_PASSWORD_ENV: &str = "CRAFT_ADMIN_PASSWORD";
+/// The administrator every installed application starts with.
+const ADMIN_USER: &str = "admin";
+const MIN_DB_PASSWORD_BYTES: usize = 12;
+const MAX_DB_PASSWORD_BYTES: usize = 128;
 /// `$1` is the administrator's address (a positional argument), the password
 /// comes from the environment.
 const MAKE_USER_SCRIPT: &str = "exec php please make:user \"$1\" --super --password=\"$STATAMIC_ADMIN_PASSWORD\" --no-interaction";
+/// Craft takes its first user's password only as an option and reads no
+/// environment variable for it: the shell inside the container expands it, so
+/// the host's argv has none (the PHP process's own argv, inside the pool
+/// container, shows it for the few seconds the install runs). `$1` is the
+/// address, `$2` the site's domain.
+const CRAFT_INSTALL_SCRIPT: &str = "exec php craft install/craft --email=\"$1\" --username=admin --password=\"$CRAFT_ADMIN_PASSWORD\" --site-name=\"$2\" --site-url=\"https://$2\" --language=en-US --interactive=0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum Application {
     Statamic,
+    Craft,
+    Typo3,
 }
 
 impl Application {
     const fn name(self) -> &'static str {
         match self {
             Self::Statamic => "statamic",
+            Self::Craft => "craft",
+            Self::Typo3 => "typo3",
         }
     }
     const fn package(self) -> &'static str {
         match self {
             Self::Statamic => "statamic/statamic",
+            // Craft 6 is not supported: the major is pinned here.
+            Self::Craft => "craftcms/craft:^5",
+            Self::Typo3 => "typo3/cms-base-distribution:^14",
         }
     }
     /// The directory the web server serves, below the project root.
     const fn docroot(self) -> &'static str {
         match self {
-            Self::Statamic => "public",
+            Self::Statamic | Self::Typo3 => "public",
+            Self::Craft => "web",
         }
     }
     const fn admin_path(self) -> &'static str {
         match self {
             Self::Statamic => "/cp",
+            Self::Craft => "/admin",
+            Self::Typo3 => "/typo3",
         }
     }
     /// The Composer package whose locked version is the application's.
     const fn version_package(self) -> &'static str {
         match self {
             Self::Statamic => "statamic/cms",
+            Self::Craft => "craftcms/cms",
+            Self::Typo3 => "typo3/cms-core",
         }
+    }
+    /// Whether the application needs a database the panel provisioned.
+    const fn needs_database(self) -> bool {
+        !matches!(self, Self::Statamic)
     }
 }
 
@@ -116,6 +144,70 @@ struct Plan {
     application: Application,
     admin_email: String,
     admin_password: String,
+    #[serde(default)]
+    database: Option<DatabasePlan>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum DatabaseDriver {
+    Mariadb,
+    Postgres,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DatabasePlan {
+    driver: DatabaseDriver,
+    host: String,
+    port: u16,
+    name: String,
+    user: String,
+    password: String,
+}
+
+/// The database the panel created for the site; never created or dropped here.
+struct Database {
+    driver: DatabaseDriver,
+    host: ContainerName,
+    port: u16,
+    name: DatabaseName,
+    user: DatabaseName,
+    password: String,
+}
+
+impl Database {
+    fn parse(plan: DatabasePlan) -> Result<Self, RequestError> {
+        // The password also lands in a `.env` file, where quotes, `#`, `$`
+        // and spaces mean something: only plain characters are accepted.
+        if plan.port == 0
+            || !(MIN_DB_PASSWORD_BYTES..=MAX_DB_PASSWORD_BYTES).contains(&plan.password.len())
+            || !plan
+                .password
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(RequestError);
+        }
+        Ok(Self {
+            driver: plan.driver,
+            host: ContainerName::parse(&plan.host)
+                .map_err(|_: RestoreRequestError| RequestError)?,
+            port: plan.port,
+            name: DatabaseName::parse(&plan.name).map_err(|_: RestoreRequestError| RequestError)?,
+            user: DatabaseName::parse(&plan.user).map_err(|_: RestoreRequestError| RequestError)?,
+            password: plan.password,
+        })
+    }
+}
+
+/// TYPO3 refuses an administrator password without a special character; the
+/// set is one that is safe in an environment variable.
+fn typo3_password_ok(password: &str) -> bool {
+    password.bytes().any(|b| b.is_ascii_lowercase())
+        && password.bytes().any(|b| b.is_ascii_uppercase())
+        && password.bytes().any(|b| b.is_ascii_digit())
+        && password.bytes().any(|b| b"-_.!@%^*+=~".contains(&b))
 }
 
 pub struct Request {
@@ -127,6 +219,7 @@ pub struct Request {
     application: Application,
     admin_email: String,
     admin_password: String,
+    database: Option<Database>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -165,6 +258,14 @@ impl Request {
         {
             return Err(RequestError);
         }
+        // The plan names a database exactly when the application needs one.
+        if plan.application.needs_database() != plan.database.is_some() {
+            return Err(RequestError);
+        }
+        if plan.application == Application::Typo3 && !typo3_password_ok(&plan.admin_password) {
+            return Err(RequestError);
+        }
+        let database = plan.database.map(Database::parse).transpose()?;
         Ok(Self {
             container: ContainerName::parse(&plan.container)
                 .map_err(|_: RestoreRequestError| RequestError)?,
@@ -175,6 +276,7 @@ impl Request {
             application: plan.application,
             admin_email: plan.admin_email,
             admin_password: plan.admin_password,
+            database,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -210,6 +312,8 @@ pub enum Error {
     Run(ProcessRunError),
     RootUnavailable,
     TargetNotEmpty,
+    /// The site's document root is another directory than the application's.
+    DocrootMismatch(&'static str),
     ResourceBusy,
     ComposerFailed(ErrorCode),
     SetupFailed(ErrorCode),
@@ -246,6 +350,12 @@ impl Error {
             Self::TargetNotEmpty => (
                 ErrorCode::Conflict,
                 "the project root already has content; only an empty site can be installed".into(),
+            ),
+            Self::DocrootMismatch(wanted) => (
+                ErrorCode::InvalidInput,
+                format!(
+                    "this application needs the site's document root to be `{wanted}/`; create the site with that root"
+                ),
             ),
             Self::ComposerFailed(code) => (
                 *code,
@@ -340,10 +450,6 @@ pub fn execute(
     }
 }
 
-/// What the install wrote below the project root, as paths relative to it.
-#[derive(Default)]
-struct Created(Vec<SiteRelativePath>);
-
 fn install(
     ctx: &Context<'_>,
     content_root: &TrustedRoot,
@@ -372,23 +478,16 @@ fn install(
     root.chown_self(req.uid, req.gid).map_err(Error::Io)?;
 
     let staging = format!(".wcp-install-{}", req.request_id);
-    let mut created = Created::default();
-    match run_install(
-        ctx,
-        req,
-        &root,
-        root_str,
-        docroot,
-        &staging,
-        &mut created,
-        cancel,
-    ) {
+    // The root was proven empty but for the docroot and its `.user.ini`:
+    // whatever else appears afterwards is the install's own.
+    let before = docroot_names(&root, docroot)?;
+    match run_install(ctx, req, &root, root_str, docroot, &staging, cancel) {
         Ok(result) => {
             let _ = root.remove_dir_all(&rel(&staging)?);
             Ok(result)
         }
         Err(error) => {
-            undo(&root, &staging, &created);
+            undo(&root, docroot, &before);
             Err(error)
         }
     }
@@ -398,6 +497,29 @@ fn install(
 /// nothing else.
 fn require_empty(root: &ManagedRoot, docroot: &str) -> Result<(), Error> {
     for entry in root.child_entries_bounded(64).map_err(Error::Io)? {
+        if entry.is_dir && entry.name != docroot {
+            if let Some(other) = ["public", "web"]
+                .into_iter()
+                .find(|name| entry.name == *name && *name != docroot)
+            {
+                // An empty or `.user.ini`-only directory of the other
+                // conventional name is a site made with the wrong root.
+                let inner = root
+                    .open_child_dir_nofollow(&rel(other)?)
+                    .map_err(Error::Io)?;
+                let bare = inner
+                    .child_entries_bounded(64)
+                    .map_err(Error::Io)?
+                    .iter()
+                    .all(|child| child.name == ".user.ini" && !child.is_dir);
+                if bare && root.child_entries_bounded(64).map_err(Error::Io)?.len() == 1 {
+                    return Err(Error::DocrootMismatch(match docroot {
+                        "web" => "web",
+                        _ => "public",
+                    }));
+                }
+            }
+        }
         if entry.name != docroot || !entry.is_dir {
             return Err(Error::TargetNotEmpty);
         }
@@ -413,7 +535,6 @@ fn require_empty(root: &ManagedRoot, docroot: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_install(
     ctx: &Context<'_>,
     req: &Request,
@@ -421,7 +542,6 @@ fn run_install(
     root_str: &str,
     docroot: &str,
     staging: &str,
-    created: &mut Created,
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
     let home = format!("COMPOSER_HOME={COMPOSER_HOME}");
@@ -449,19 +569,32 @@ fn run_install(
         return Err(Error::ComposerFailed(code));
     }
 
-    move_into_place(root, staging, docroot, created)?;
-    set_site_url(root, req)?;
-
-    let output = exec(
-        ctx,
-        req,
-        root_str,
-        &[],
-        &[(PASSWORD_ENV, &req.admin_password)],
-        &["sh", "-c", MAKE_USER_SCRIPT, "sh", &req.admin_email],
-        SETUP_TIMEOUT,
-        cancel,
-    )?;
+    move_into_place(root, staging, docroot)?;
+    let output = match req.application {
+        Application::Statamic => {
+            set_env_file(
+                root,
+                req,
+                &[
+                    ("APP_URL", &format!("https://{}", req.domain.as_str())),
+                    ("APP_ENV", "production"),
+                    ("APP_DEBUG", "false"),
+                ],
+            )?;
+            exec(
+                ctx,
+                req,
+                root_str,
+                &[],
+                &[(PASSWORD_ENV, &req.admin_password)],
+                &["sh", "-c", MAKE_USER_SCRIPT, "sh", &req.admin_email],
+                SETUP_TIMEOUT,
+                cancel,
+            )?
+        }
+        Application::Craft => setup_craft(ctx, req, root, root_str, cancel)?,
+        Application::Typo3 => setup_typo3(ctx, req, root_str, cancel)?,
+    };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
     }
@@ -482,12 +615,7 @@ fn run_install(
 /// Moves each top-level entry of the staging directory into the project root;
 /// the docroot's entries go into the docroot that is already there. Nothing
 /// is overwritten: a name that exists is a conflict.
-fn move_into_place(
-    root: &ManagedRoot,
-    staging: &str,
-    docroot: &str,
-    created: &mut Created,
-) -> Result<(), Error> {
+fn move_into_place(root: &ManagedRoot, staging: &str, docroot: &str) -> Result<(), Error> {
     let staged = root
         .open_child_dir_nofollow(&rel(staging)?)
         .map_err(Error::Io)?;
@@ -509,7 +637,6 @@ fn move_into_place(
                 }
                 root.rename(&rel(format!("{staging}/{docroot}/{child_name}"))?, &target)
                     .map_err(Error::Io)?;
-                created.0.push(target);
             }
         } else {
             let target = rel(&name)?;
@@ -518,31 +645,134 @@ fn move_into_place(
             }
             root.rename(&rel(format!("{staging}/{name}"))?, &target)
                 .map_err(Error::Io)?;
-            created.0.push(target);
         }
     }
     Ok(())
 }
 
-/// Points the application at the site's own address: a fixed key set, written
-/// through the managed root and kept readable by the site's UID.
-fn set_site_url(root: &ManagedRoot, req: &Request) -> Result<(), Error> {
+/// Sets a fixed key set in the application's `.env`, written through the
+/// managed root and kept readable by the site's UID.
+fn set_env_file(root: &ManagedRoot, req: &Request, updates: &[(&str, &str)]) -> Result<(), Error> {
     let env = rel(".env")?;
     let original = root.read_to_string(&env).map_err(Error::Io)?;
-    let url = format!("https://{}", req.domain.as_str());
-    let updated = crate::util::set_env_lines(
-        &original,
-        &[
-            ("APP_URL", &url),
-            ("APP_ENV", "production"),
-            ("APP_DEBUG", "false"),
-        ],
-    )
-    .map_err(Error::Io)?;
+    let updated = crate::util::set_env_lines(&original, updates).map_err(Error::Io)?;
     root.write_atomic(&env, updated.as_bytes())
         .map_err(Error::Io)?;
     root.chown(&env, req.uid, req.gid).map_err(Error::Io)?;
     root.set_mode(&env, 0o640).map_err(Error::Io)
+}
+
+/// Craft: the database and the site's address go into `.env` (Craft reads
+/// `CRAFT_*` from it), `setup/keys` generates the application key, and
+/// `install/craft` creates the tables and the first user.
+fn setup_craft(
+    ctx: &Context<'_>,
+    req: &Request,
+    root: &ManagedRoot,
+    root_str: &str,
+    cancel: &CancellationToken,
+) -> Result<ProcessOutput, Error> {
+    let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let driver = match db.driver {
+        DatabaseDriver::Mariadb => "mysql",
+        DatabaseDriver::Postgres => "pgsql",
+    };
+    let port = db.port.to_string();
+    set_env_file(
+        root,
+        req,
+        &[
+            ("CRAFT_ENVIRONMENT", "production"),
+            ("CRAFT_DEV_MODE", "false"),
+            ("CRAFT_DB_DRIVER", driver),
+            ("CRAFT_DB_SERVER", db.host.as_str()),
+            ("CRAFT_DB_PORT", &port),
+            ("CRAFT_DB_DATABASE", db.name.as_str()),
+            ("CRAFT_DB_USER", db.user.as_str()),
+            ("CRAFT_DB_PASSWORD", &db.password),
+            (
+                "PRIMARY_SITE_URL",
+                &format!("https://{}", req.domain.as_str()),
+            ),
+        ],
+    )?;
+    let keys = exec(
+        ctx,
+        req,
+        root_str,
+        &[],
+        &[],
+        &["php", "craft", "setup/keys", "--interactive=0"],
+        SETUP_TIMEOUT,
+        cancel,
+    )?;
+    if process::error_code(&keys.termination).is_some() {
+        return Ok(keys);
+    }
+    exec(
+        ctx,
+        req,
+        root_str,
+        &[],
+        &[(CRAFT_PASSWORD_ENV, &req.admin_password)],
+        &[
+            "sh",
+            "-c",
+            CRAFT_INSTALL_SCRIPT,
+            "sh",
+            &req.admin_email,
+            req.domain.as_str(),
+        ],
+        SETUP_TIMEOUT,
+        cancel,
+    )
+}
+
+/// TYPO3: `typo3 setup` reads everything from the environment, passwords
+/// included, so nothing secret is in any argument.
+fn setup_typo3(
+    ctx: &Context<'_>,
+    req: &Request,
+    root_str: &str,
+    cancel: &CancellationToken,
+) -> Result<ProcessOutput, Error> {
+    let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let driver = match db.driver {
+        DatabaseDriver::Mariadb => "mysqli",
+        DatabaseDriver::Postgres => "pdo_pgsql",
+    };
+    let env = [
+        format!("TYPO3_DB_DRIVER={driver}"),
+        format!("TYPO3_DB_HOST={}", db.host.as_str()),
+        format!("TYPO3_DB_PORT={}", db.port),
+        format!("TYPO3_DB_DBNAME={}", db.name.as_str()),
+        format!("TYPO3_DB_USERNAME={}", db.user.as_str()),
+        format!("TYPO3_SETUP_ADMIN_EMAIL={}", req.admin_email),
+        format!("TYPO3_SETUP_ADMIN_USERNAME={ADMIN_USER}"),
+        format!("TYPO3_SETUP_CREATE_SITE=https://{}/", req.domain.as_str()),
+        format!("TYPO3_PROJECT_NAME={}", req.domain.as_str()),
+        "TYPO3_SERVER_TYPE=other".to_owned(),
+    ];
+    let env: Vec<&str> = env.iter().map(String::as_str).collect();
+    exec(
+        ctx,
+        req,
+        root_str,
+        &env,
+        &[
+            ("TYPO3_DB_PASSWORD", &db.password),
+            ("TYPO3_SETUP_ADMIN_PASSWORD", &req.admin_password),
+        ],
+        &[
+            "php",
+            "vendor/bin/typo3",
+            "setup",
+            "--force",
+            "--no-interaction",
+        ],
+        SETUP_TIMEOUT,
+        cancel,
+    )
 }
 
 /// The locked version of the application's own package, read from
@@ -563,23 +793,56 @@ fn locked_version(root: &ManagedRoot, application: Application) -> Result<String
         .ok_or(Error::Unverified)
 }
 
-/// Removes exactly what this install wrote: the moved entries and the staging
-/// directory. The project root, the docroot directory and its `.user.ini`
-/// were there before and stay.
-fn undo(root: &ManagedRoot, staging: &str, created: &Created) {
-    for path in created.0.iter().rev() {
-        let is_dir = root
-            .symlink_metadata(path)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
-        let _ = if is_dir {
-            root.remove_dir_all(path)
-        } else {
-            root.remove_file(path)
-        };
+/// The names in the docroot before the install started.
+fn docroot_names(root: &ManagedRoot, docroot: &str) -> Result<Vec<std::ffi::OsString>, Error> {
+    match root.open_child_dir_nofollow(&rel(docroot)?) {
+        Ok(inner) => Ok(inner
+            .child_entries_bounded(64)
+            .map_err(Error::Io)?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(Error::Io(error)),
     }
-    if let Ok(staging) = SiteRelativePath::parse(staging) {
-        let _ = root.remove_dir_all(&staging);
+}
+
+/// Removes exactly what this install wrote. The root was empty but for the
+/// docroot (with at most `.user.ini`) when it started, so everything else at
+/// the top level is the install's, as is anything new inside the docroot.
+/// Setup commands write files of their own (`var/`, `config/system/`), which
+/// is why this does not rely on a list of what the install moved.
+fn undo(root: &ManagedRoot, docroot: &str, before: &[std::ffi::OsString]) {
+    let remove = |dir: &ManagedRoot, prefix: &str, name: &std::ffi::OsStr, is_dir: bool| {
+        let Some(name) = name.to_str() else { return };
+        let Ok(path) = SiteRelativePath::parse(format!("{prefix}{name}")) else {
+            return;
+        };
+        let _ = if is_dir {
+            dir.remove_dir_all(&path)
+        } else {
+            dir.remove_file(&path)
+        };
+    };
+    let Ok(entries) = root.child_entries() else {
+        return;
+    };
+    for entry in entries {
+        if entry.name == docroot && entry.is_dir {
+            let Ok(path) = SiteRelativePath::parse(docroot) else {
+                continue;
+            };
+            let Ok(inner) = root.open_child_dir_nofollow(&path) else {
+                continue;
+            };
+            for child in inner.child_entries().unwrap_or_default() {
+                if !before.contains(&child.name) {
+                    remove(&inner, "", &child.name, child.is_dir);
+                }
+            }
+        } else {
+            remove(root, "", &entry.name, entry.is_dir);
+        }
     }
 }
 
@@ -731,6 +994,7 @@ mod tests {
 dir=$(dirname "$0")
 echo "$@" >> "$dir/calls.log"
 echo "$STATAMIC_ADMIN_PASSWORD" >> "$dir/env.log"
+echo "$CRAFT_ADMIN_PASSWORD|$TYPO3_SETUP_ADMIN_PASSWORD|$TYPO3_DB_PASSWORD|$TYPO3_DB_DRIVER|$TYPO3_DB_HOST|$TYPO3_DB_PORT|$TYPO3_DB_DBNAME|$TYPO3_DB_USERNAME|$TYPO3_SETUP_CREATE_SITE" >> "$dir/secrets.log"
 cwd=""
 prev=""
 for a in "$@"; do
@@ -740,19 +1004,48 @@ done
 case "$*" in
   *create-project*)
     [ -e "$dir/fail-composer" ] && exit 1
+    package=""
     staging=""
-    take=0
+    seen=0
     for a in "$@"; do
-      if [ "$take" = 1 ]; then staging="$a"; take=0; fi
-      [ "$a" = "statamic/statamic" ] && take=1
+      if [ "$seen" = 2 ]; then staging="$a"; seen=3; fi
+      if [ "$seen" = 1 ]; then package="$a"; seen=2; fi
+      [ "$a" = "create-project" ] && seen=1
     done
-    mkdir -p "$cwd/$staging/public" "$cwd/$staging/app"
-    echo '<?php' > "$cwd/$staging/public/index.php"
-    printf 'APP_URL=http://localhost:8000\nAPP_ENV=local\n' > "$cwd/$staging/.env"
-    echo '{"packages":[{"name":"statamic/cms","version":"v6.2.1"}]}' > "$cwd/$staging/composer.lock"
+    case "$package" in
+      statamic/statamic)
+        mkdir -p "$cwd/$staging/public" "$cwd/$staging/app"
+        echo '<?php' > "$cwd/$staging/public/index.php"
+        printf 'APP_URL=http://localhost:8000\nAPP_ENV=local\n' > "$cwd/$staging/.env"
+        echo '{"packages":[{"name":"statamic/cms","version":"v6.2.1"}]}' > "$cwd/$staging/composer.lock"
+        ;;
+      craftcms/craft:^5)
+        mkdir -p "$cwd/$staging/web" "$cwd/$staging/config"
+        echo '<?php' > "$cwd/$staging/web/index.php"
+        printf 'CRAFT_ENVIRONMENT=dev\nCRAFT_DEV_MODE=true\nCRAFT_DB_DRIVER=\nCRAFT_SECURITY_KEY=\n' > "$cwd/$staging/.env"
+        echo '{"packages":[{"name":"craftcms/cms","version":"5.12.1"}]}' > "$cwd/$staging/composer.lock"
+        ;;
+      typo3/cms-base-distribution:^14)
+        mkdir -p "$cwd/$staging/public" "$cwd/$staging/config"
+        echo '<?php' > "$cwd/$staging/public/index.php"
+        echo '{"packages":[{"name":"typo3/cms-core","version":"v14.0.1"}]}' > "$cwd/$staging/composer.lock"
+        ;;
+      *) exit 3 ;;
+    esac
     ;;
   *make:user*)
     [ -e "$dir/fail-user" ] && exit 1
+    ;;
+  *setup/keys*)
+    ;;
+  *install/craft*)
+    [ -e "$dir/fail-craft" ] && exit 1
+    ;;
+  *typo3*setup*)
+    # TYPO3 writes files of its own before it can fail.
+    mkdir -p "$cwd/var/log" "$cwd/config/system"
+    echo '<?php' > "$cwd/config/system/settings.php"
+    [ -e "$dir/fail-typo3" ] && exit 1
     ;;
 esac
 exit 0
@@ -768,12 +1061,16 @@ exit 0
     }
 
     fn fixture() -> Fixture {
+        fixture_for("public")
+    }
+
+    fn fixture_for(docroot: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let content = dir.path().join("content");
         let state_dir = dir.path().join("state");
         let site = content.join("example.com");
-        fs::create_dir_all(site.join("public")).unwrap();
-        fs::write(site.join("public/.user.ini"), "x").unwrap();
+        fs::create_dir_all(site.join(docroot)).unwrap();
+        fs::write(site.join(docroot).join(".user.ini"), "x").unwrap();
         fs::create_dir_all(&state_dir).unwrap();
         let docker = dir.path().join("docker");
         fs::write(&docker, FAKE_DOCKER).unwrap();
@@ -791,13 +1088,20 @@ exit 0
 
     impl Fixture {
         fn run(&self, id: &str, key: Option<&str>) -> Result<InstallResult, Error> {
-            let docker = self.dir.path().join("docker");
-            let request = Request::parse(
+            self.run_plan(
                 &plan(self.site.to_str().unwrap(), self.uid, self.gid),
                 id,
                 key,
             )
-            .unwrap();
+        }
+        fn run_plan(
+            &self,
+            json: &str,
+            id: &str,
+            key: Option<&str>,
+        ) -> Result<InstallResult, Error> {
+            let docker = self.dir.path().join("docker");
+            let request = Request::parse(json, id, key).unwrap();
             execute(
                 &Context {
                     engine_state: &self.state,
@@ -946,5 +1250,252 @@ exit 0
             locked_version(&root, Application::Statamic).unwrap(),
             "6.2.1"
         );
+    }
+
+    const DB_PASSWORD: &str = "Db-password_12345.x";
+    const TYPO3_PASSWORD: &str = "Correct-Horse-9!battery";
+
+    fn database(driver: &str) -> serde_json::Value {
+        serde_json::json!({
+            "driver": driver,
+            "host": "mariadb",
+            "port": 3306,
+            "name": "site_db",
+            "user": "site_user",
+            "password": DB_PASSWORD,
+        })
+    }
+
+    fn plan_for(
+        f: &Fixture,
+        application: &str,
+        password: &str,
+        db: Option<serde_json::Value>,
+    ) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&plan(f.site.to_str().unwrap(), f.uid, f.gid)).unwrap();
+        value["application"] = application.into();
+        value["adminPassword"] = password.into();
+        if let Some(db) = db {
+            value["database"] = db;
+        }
+        value.to_string()
+    }
+
+    #[test]
+    fn a_database_is_required_exactly_when_the_application_needs_one() {
+        let f = fixture();
+        let parse = |json: String| Request::parse(&json, REQUEST_ID, None).is_ok();
+        assert!(parse(plan_for(&f, "statamic", PASSWORD, None)));
+        assert!(!parse(plan_for(
+            &f,
+            "statamic",
+            PASSWORD,
+            Some(database("mariadb"))
+        )));
+        assert!(!parse(plan_for(&f, "craft", PASSWORD, None)));
+        assert!(parse(plan_for(
+            &f,
+            "craft",
+            PASSWORD,
+            Some(database("mariadb"))
+        )));
+        assert!(parse(plan_for(
+            &f,
+            "craft",
+            PASSWORD,
+            Some(database("postgres"))
+        )));
+        assert!(!parse(plan_for(&f, "typo3", TYPO3_PASSWORD, None)));
+        assert!(parse(plan_for(
+            &f,
+            "typo3",
+            TYPO3_PASSWORD,
+            Some(database("mariadb"))
+        )));
+    }
+
+    #[test]
+    fn database_fields_are_validated_one_by_one() {
+        let f = fixture();
+        let bad = |key: &str, value: serde_json::Value| {
+            let mut db = database("mariadb");
+            db[key] = value;
+            Request::parse(&plan_for(&f, "craft", PASSWORD, Some(db)), REQUEST_ID, None).is_err()
+        };
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("driver", "sqlite".into()),
+            ("host", "bad host".into()),
+            ("host", "".into()),
+            ("port", 0.into()),
+            ("name", "site; drop".into()),
+            ("user", "".into()),
+            // The password also goes into a .env file: plain characters only.
+            ("password", "short".into()),
+            ("password", "has space in it 123".into()),
+            ("password", "has#hash-and-$dollar1".into()),
+            ("password", "quote\"inside-123456".into()),
+            ("password", "x".repeat(129).into()),
+        ];
+        for (key, value) in cases {
+            assert!(bad(key, value.clone()), "{key} {value}");
+        }
+        let mut db = database("mariadb");
+        db["extra"] = true.into();
+        assert!(
+            Request::parse(&plan_for(&f, "craft", PASSWORD, Some(db)), REQUEST_ID, None).is_err()
+        );
+    }
+
+    #[test]
+    fn a_site_made_with_the_wrong_document_root_is_named_as_such() {
+        // Craft serves `web/`; a site created with the default `public/` is
+        // refused with that reason, before anything runs.
+        let f = fixture();
+        let json = plan_for(&f, "craft", PASSWORD, Some(database("mariadb")));
+        let error = f.run_plan(&json, REQUEST_ID, None).unwrap_err();
+        assert!(matches!(error, Error::DocrootMismatch("web")), "{error:?}");
+        assert_eq!(f.calls(), "");
+        // And the other way round, for Statamic on a `web/` site.
+        let g = fixture_for("web");
+        let error = g.run(REQUEST_ID, None).unwrap_err();
+        assert!(
+            matches!(error, Error::DocrootMismatch("public")),
+            "{error:?}"
+        );
+        // A directory with content is just not empty.
+        let h = fixture_for("web");
+        fs::write(h.site.join("web/page.php"), "mine").unwrap();
+        assert!(matches!(
+            h.run(REQUEST_ID, None),
+            Err(Error::TargetNotEmpty)
+        ));
+    }
+
+    #[test]
+    fn typo3_wants_a_password_it_will_accept() {
+        let f = fixture();
+        let ok = |password: &str| {
+            Request::parse(
+                &plan_for(&f, "typo3", password, Some(database("mariadb"))),
+                REQUEST_ID,
+                None,
+            )
+            .is_ok()
+        };
+        assert!(ok(TYPO3_PASSWORD));
+        for bad in [
+            "alllowercase1!aaaa",
+            "ALLUPPERCASE1!AAAA",
+            "NoDigitsHere!aaaaa",
+            "NoSpecialChar1aaaa",
+        ] {
+            assert!(!ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn craft_installs_with_its_database_in_the_env_and_the_password_in_the_environment() {
+        let f = fixture_for("web");
+        let json = plan_for(&f, "craft", PASSWORD, Some(database("postgres")));
+        let result = f.run_plan(&json, REQUEST_ID, None).unwrap();
+        assert_eq!(result.application, "craft");
+        assert_eq!(result.version, "5.12.1");
+        assert_eq!(result.admin_url, "https://example.com/admin");
+        assert_eq!(f.names(""), [".env", "composer.lock", "config", "web"]);
+        assert_eq!(f.names("web"), [".user.ini", "index.php"]);
+        let env = fs::read_to_string(f.site.join(".env")).unwrap();
+        for line in [
+            "CRAFT_ENVIRONMENT=production",
+            "CRAFT_DEV_MODE=false",
+            "CRAFT_DB_DRIVER=pgsql",
+            "CRAFT_DB_SERVER=mariadb",
+            "CRAFT_DB_PORT=3306",
+            "CRAFT_DB_DATABASE=site_db",
+            "CRAFT_DB_USER=site_user",
+            &format!("CRAFT_DB_PASSWORD={DB_PASSWORD}"),
+            "PRIMARY_SITE_URL=https://example.com",
+        ] {
+            assert!(env.lines().any(|l| l == line), "{line}\n{env}");
+        }
+        let calls = f.calls();
+        assert!(calls.contains("craftcms/craft:^5"), "{calls}");
+        assert!(
+            calls.contains("php craft setup/keys --interactive=0"),
+            "{calls}"
+        );
+        assert!(
+            calls.contains("-e CRAFT_ADMIN_PASSWORD runtime-1 sh -c exec php craft install/craft")
+                && calls
+                    .trim_end()
+                    .ends_with("sh admin@example.com example.com"),
+            "{calls}"
+        );
+        assert!(!calls.contains(PASSWORD), "{calls}");
+        let secrets = fs::read_to_string(f.dir.path().join("secrets.log")).unwrap();
+        assert!(
+            secrets
+                .lines()
+                .any(|l| l.starts_with(&format!("{PASSWORD}|"))),
+            "{secrets}"
+        );
+    }
+
+    #[test]
+    fn typo3_installs_with_everything_in_the_environment() {
+        let f = fixture();
+        let json = plan_for(&f, "typo3", TYPO3_PASSWORD, Some(database("mariadb")));
+        let result = f.run_plan(&json, REQUEST_ID, None).unwrap();
+        assert_eq!(result.application, "typo3");
+        assert_eq!(result.version, "14.0.1");
+        assert_eq!(result.admin_url, "https://example.com/typo3");
+        let calls = f.calls();
+        for flag in [
+            "-e TYPO3_DB_PASSWORD",
+            "-e TYPO3_SETUP_ADMIN_PASSWORD",
+            "-e TYPO3_DB_DRIVER=mysqli",
+            "-e TYPO3_DB_DBNAME=site_db",
+            "-e TYPO3_SETUP_ADMIN_EMAIL=admin@example.com",
+            "-e TYPO3_SETUP_CREATE_SITE=https://example.com/",
+            "-e TYPO3_SERVER_TYPE=other",
+            "php vendor/bin/typo3 setup --force --no-interaction",
+        ] {
+            assert!(calls.contains(flag), "{flag}\n{calls}");
+        }
+        assert!(!calls.contains(TYPO3_PASSWORD), "{calls}");
+        assert!(!calls.contains(DB_PASSWORD), "{calls}");
+        let secrets = fs::read_to_string(f.dir.path().join("secrets.log")).unwrap();
+        assert!(
+            secrets
+                .lines()
+                .any(|l| l.contains(&format!("|{TYPO3_PASSWORD}|{DB_PASSWORD}|"))),
+            "{secrets}"
+        );
+        assert_eq!(f.names("public"), [".user.ini", "index.php"]);
+    }
+
+    #[test]
+    fn a_failed_setup_removes_files_the_setup_command_wrote_itself() {
+        // TYPO3's setup creates `var/` and `config/system/` before it fails;
+        // Craft's install fails after `.env` was rewritten.
+        let f = fixture();
+        fs::write(f.dir.path().join("fail-typo3"), "").unwrap();
+        let json = plan_for(&f, "typo3", TYPO3_PASSWORD, Some(database("mariadb")));
+        assert!(matches!(
+            f.run_plan(&json, REQUEST_ID, None),
+            Err(Error::SetupFailed(_))
+        ));
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+
+        let g = fixture_for("web");
+        fs::write(g.dir.path().join("fail-craft"), "").unwrap();
+        let json = plan_for(&g, "craft", PASSWORD, Some(database("mariadb")));
+        assert!(matches!(
+            g.run_plan(&json, REQUEST_ID, None),
+            Err(Error::SetupFailed(_))
+        ));
+        assert_eq!(g.names(""), ["web"]);
+        assert_eq!(g.names("web"), [".user.ini"]);
     }
 }
