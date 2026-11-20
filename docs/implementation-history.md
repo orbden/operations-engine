@@ -6,7 +6,7 @@
 > [`../PLAN.md`](../PLAN.md) for the active roadmap.
 >
 > References below to "the docs repo" (or `local-control-panel/docs`) mean the
-> `documentation/` directory of the private `website-control-panel` repository,
+> `docs/` directory of the private `website-control-panel` repository,
 > where that repository was merged on 2026-11-20 with its history.
 
 Status: active  
