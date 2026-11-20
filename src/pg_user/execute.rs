@@ -115,6 +115,19 @@ pub fn execute(
         ));
     }
     sql.push_str("COMMIT;\n");
+    if let Some(database) = &req.database {
+        // PostgreSQL 15 removed CREATE on schema public from everyone but the
+        // database owner, so the database grant alone leaves the role unable
+        // to create a table. The owner stays as it was; the role gets the one
+        // schema. It runs after COMMIT (`\connect` cannot run inside a
+        // transaction): a failure here is recorded as failed and leaves the
+        // committed role for `db.dropPostgresUser`.
+        sql.push_str(&format!(
+            "\\connect \"{}\"\nGRANT ALL ON SCHEMA public TO \"{}\";\n",
+            database.as_str(),
+            req.user
+        ));
+    }
     let output = process::run_with_stdin_bytes(
         &ProcessRequest::new(ctx.docker_program).args(args),
         sql.as_bytes(),
@@ -252,5 +265,74 @@ mod tests {
         assert!(input.contains("CREATE USER \"app_user\""));
         assert!(input.contains("GRANT ALL PRIVILEGES ON DATABASE \"site_db\""));
         assert!(input.contains("COMMIT;"));
+        // The schema grant follows the commit, in the new role's database,
+        // and nothing of it appears in argv (the fake docker rejects secrets).
+        let commit = input.find("COMMIT;").unwrap();
+        let connect = input.find("\\connect \"site_db\"").unwrap();
+        let schema = input
+            .find("GRANT ALL ON SCHEMA public TO \"app_user\";")
+            .unwrap();
+        assert!(commit < connect && connect < schema);
+        assert!(!input.contains("OWNER TO"));
+    }
+
+    #[test]
+    fn a_role_without_a_database_gets_no_schema_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        fs::create_dir(&state_dir).unwrap();
+        let stdin = dir.path().join("stdin");
+        let docker = dir.path().join("docker");
+        fs::write(&docker, format!("#!/bin/sh\ncat > '{}'\n", stdin.display())).unwrap();
+        let mut mode = fs::metadata(&docker).unwrap().permissions();
+        mode.set_mode(0o755);
+        fs::set_permissions(&docker, mode).unwrap();
+        let state =
+            ManagedRoot::open(&crate::site::TrustedRoot::parse(&state_dir).unwrap()).unwrap();
+        let req = Request::parse(r#"{"container":"postgres-17","rootPassword":"root-secret","user":"app_user","password":"user-secret"}"#, "123e4567-e89b-12d3-a456-426614174001", None).unwrap();
+        execute(
+            &Context {
+                engine_state: &state,
+                docker_program: docker.to_str().unwrap(),
+            },
+            &req,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        let input = fs::read_to_string(stdin).unwrap();
+        assert!(!input.contains("GRANT") && !input.contains("\\connect"));
+    }
+
+    #[test]
+    fn a_failing_schema_grant_is_recorded_as_failed_and_replays_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        fs::create_dir(&state_dir).unwrap();
+        let docker = dir.path().join("docker");
+        // psql with ON_ERROR_STOP exits non-zero when the step after COMMIT fails.
+        fs::write(&docker, "#!/bin/sh\ncat >/dev/null\nexit 3\n").unwrap();
+        let mut mode = fs::metadata(&docker).unwrap().permissions();
+        mode.set_mode(0o755);
+        fs::set_permissions(&docker, mode).unwrap();
+        let state =
+            ManagedRoot::open(&crate::site::TrustedRoot::parse(&state_dir).unwrap()).unwrap();
+        let ctx = Context {
+            engine_state: &state,
+            docker_program: docker.to_str().unwrap(),
+        };
+        let json = r#"{"container":"postgres-17","rootPassword":"root-secret","user":"app_user","password":"user-secret","database":"site_db"}"#;
+        let id = "123e4567-e89b-12d3-a456-426614174002";
+        let first = execute(
+            &ctx,
+            &Request::parse(json, id, Some("key-1")).unwrap(),
+            &CancellationToken::default(),
+        );
+        assert!(matches!(first, Err(Error::Rejected(_))));
+        let again = execute(
+            &ctx,
+            &Request::parse(json, id, Some("key-1")).unwrap(),
+            &CancellationToken::default(),
+        );
+        assert!(matches!(again, Err(Error::Replayed { .. })), "{again:?}");
     }
 }
