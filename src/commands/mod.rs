@@ -15,6 +15,7 @@ pub mod journal;
 pub mod maria_readonly_user;
 pub mod mariadb_migrate;
 pub mod meilisearch;
+pub mod node;
 pub mod operation;
 pub mod permissions;
 pub mod runtime_config;

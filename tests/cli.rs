@@ -153,6 +153,7 @@ fn capabilities_describe_only_implemented_operations() {
             "cms.clearCache",
             "cms.maintenance",
             "cms.safeMode",
+            "node.build",
             "drupal.automatedCron",
             "drupal.cacheRebuild",
             "drupal.cronRun",

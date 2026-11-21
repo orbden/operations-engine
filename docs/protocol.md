@@ -1270,6 +1270,51 @@ idempotency, transaction and audit as for the Drupal actions; the result is
 `{kind, completedAtUnixSecs}` with no command output. Advertised as
 `cms.clearCache`.
 
+## `node.build`
+
+`node build --request-file <root-owned JSON> --request-id <uuid>
+[--idempotency-key <key>]` builds a Node.js project once, in throw-away
+containers, and keeps the output directory as an engine-owned artifact. The
+request is `{projectRoot, image, uid, gid, script?, outputDir?, memoryMb?,
+timeoutSecs?, ignoreScripts?}`; unknown fields are rejected. `projectRoot` is
+inside a configured content root. `image` is an allowed-registry reference that
+carries a `@sha256:` digest: a tag alone is refused, so the build image never
+moves. `uid`/`gid` are the site's non-zero identity. `script` (default
+`build`) is an npm script name that does not start with `-` and must exist in
+`package.json`; `outputDir` (default `dist`) is a relative directory of at most
+four plain components; `memoryMb` is 512-8192 (default 2048), `timeoutSecs` is
+60-3600 per container run (default 900); `ignoreScripts` adds
+`--ignore-scripts` to the install.
+
+The project needs `package.json` and `package-lock.json` (`invalid_input`
+otherwise). It is copied into an engine-private staging directory, without
+`node_modules`, `.git`, `.npmrc` and `.env*`, so the build never sees the site's
+credentials. A symlink, special file or hard-linked file, a tree deeper than 32
+levels, more than 50000 entries or 1 GiB is refused. The site's own files are
+never written. Two fixed container runs follow, each without a shell: `npm ci
+--no-audit --no-fund` and `npm run <script>`. They run as the site identity
+with all capabilities dropped, `no-new-privileges`, a read-only root file
+system (a `/tmp` tmpfs and the staging directory are writable), a memory limit
+with swap equal to it, a PID limit and reduced CPU shares; there is no Docker
+socket and no host path other than the staging directory. The default Docker
+network gives the build access to the package registry; it is not the stack's
+backend network.
+
+On success the output directory is copied (no links, at most 100000 entries and
+2 GiB) into `<state>/node-build/<hash>/artifacts/<request-id>` and the staging
+copy is removed; a build that leaves the directory missing or empty fails
+(`invalid_input`). The newest three artifacts and ten logs per project are
+kept. The result is `{buildId, artifactPath, outputDir, files, bytes, logPath,
+durationSecs, completedAtUnixSecs}`; `logPath` is a root-only (0600) file with
+the output of both runs, which never travels in the response or in an error
+message. A failing run is `subprocess_failed` (`timeout` after a timeout) with a
+message that names the phase and the exit code only; the container is removed
+and no artifact stays. Resource lock per project root, idempotency,
+transaction and audit as for `cms.clearCache`; a replay returns the recorded
+result without building again. Publishing a static artifact is
+`site.publishStatic`; this operation does not change any route. Advertised as
+`node.build`.
+
 ## `cms.maintenance`
 
 `cms maintenance` takes a root-owned JSON request `{kind, state, container,
