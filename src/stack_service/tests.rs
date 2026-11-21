@@ -1189,6 +1189,115 @@ fn a_failed_up_skips_the_health_wait() {
 }
 
 #[test]
+fn ensure_data_service_starts_the_line_under_its_profile_and_waits_for_healthy() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    let req = EnsureDataServiceRequest::parse("postgres-19", Some("postgres-19"), ID, Some("pg-1"))
+        .unwrap();
+
+    let result = ensure_data_service(&fixture.ctx(), &req, &CancellationToken::default()).unwrap();
+    assert_eq!(result.service, "postgres-19");
+    ensure_data_service(&fixture.ctx(), &req, &CancellationToken::default()).unwrap();
+
+    let prefix = compose_prefix(&fixture);
+    assert_eq!(
+        fixture.calls(),
+        vec![
+            format!("{prefix} --profile postgres-19 up -d postgres-19"),
+            format!("{prefix} ps -q postgres-19"),
+            format!(
+                "{} inspect -f {{{{if .State.Health}}}}{{{{.State.Health.Status}}}}{{{{end}}}} \
+                 c0ffee",
+                fixture.stack_dir.display()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn ensure_data_service_without_a_profile_is_a_plain_up_and_a_failed_up_skips_the_wait() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    let req = EnsureDataServiceRequest::parse("postgres-18", None, ID, None).unwrap();
+    ensure_data_service(&fixture.ctx(), &req, &CancellationToken::default()).unwrap();
+    assert_eq!(
+        fixture.calls()[0],
+        format!("{} up -d postgres-18", compose_prefix(&fixture))
+    );
+
+    let failing = Fixture::new(1);
+    let error =
+        ensure_data_service(&failing.ctx(), &req, &CancellationToken::default()).unwrap_err();
+    assert!(matches!(error, Error::Rejected(Stage::Up, _)));
+    assert_eq!(failing.calls().len(), 1);
+}
+
+#[test]
+fn ensure_data_service_takes_the_stack_lock() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    let stack_scope = crate::stack_deploy::open_scope(&fixture.state).unwrap();
+    let _held =
+        crate::stack_deploy::acquire_stack_lock(&stack_scope, RequestId::parse(OTHER_ID).unwrap())
+            .unwrap();
+    let req =
+        EnsureDataServiceRequest::parse("postgres-19", Some("postgres-19"), ID, None).unwrap();
+    assert!(matches!(
+        ensure_data_service(&fixture.ctx(), &req, &CancellationToken::default()),
+        Err(Error::StackBusy)
+    ));
+    assert!(fixture.calls().is_empty());
+}
+
+#[test]
+fn ensure_data_service_accepts_only_a_postgres_line_and_its_own_profile() {
+    for good in ["postgres-18", "postgres-19", "postgres-100"] {
+        assert!(
+            EnsureDataServiceRequest::parse(good, None, ID, None).is_ok(),
+            "{good}"
+        );
+    }
+    for bad in [
+        "",
+        "postgres",
+        "postgres-",
+        "postgres-1",
+        "postgres-1000",
+        "postgres-1x",
+        "Postgres-18",
+        "postgres-18 ",
+        "runtime-fp1-php83",
+        "ingress",
+        "mariadb-11",
+        "../postgres-18",
+        "postgres-18/../x",
+    ] {
+        assert_eq!(
+            EnsureDataServiceRequest::parse(bad, None, ID, None).err(),
+            Some(RequestError::InvalidDataService),
+            "{bad:?}"
+        );
+    }
+    for good in ["postgres", "postgres-19"] {
+        assert!(
+            EnsureDataServiceRequest::parse("postgres-19", Some(good), ID, None).is_ok(),
+            "{good}"
+        );
+    }
+    for bad in ["", "postgres-18", "php-8.4", "mariadb", "postgres ", "all"] {
+        assert_eq!(
+            EnsureDataServiceRequest::parse("postgres-19", Some(bad), ID, None).err(),
+            Some(RequestError::InvalidDataProfile),
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        EnsureDataServiceRequest::parse("postgres-19", None, "nope", None).err(),
+        Some(RequestError::InvalidRequestId)
+    );
+}
+
+#[test]
 fn reload_workers_restarts_the_pool_site_services() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let fixture = Fixture::new(0);

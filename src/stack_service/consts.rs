@@ -3,6 +3,7 @@ use super::*;
 pub const RELOAD_OPERATION: &str = "stack.reloadCaddy";
 pub const STOP_OPERATION: &str = "stack.stopIdleRuntime";
 pub const ENSURE_OPERATION: &str = "stack.ensureRuntime";
+pub const ENSURE_DATA_SERVICE_OPERATION: &str = "stack.ensureDataService";
 pub const RELOAD_WORKERS_OPERATION: &str = "stack.reloadWorkers";
 pub const FLUSH_FPC_OPERATION: &str = "stack.flushFpc";
 pub const WRITE_SITE_SERVICE_OPERATION: &str = "stack.writeSiteService";

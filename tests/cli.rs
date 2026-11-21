@@ -202,6 +202,7 @@ fn capabilities_describe_only_implemented_operations() {
             "stack.reloadCaddy",
             "stack.stopIdleRuntime",
             "stack.ensureRuntime",
+            "stack.ensureDataService",
             "stack.reloadWorkers",
             "stack.flushFpc",
             "stack.writeSiteService",

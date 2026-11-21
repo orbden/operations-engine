@@ -44,6 +44,17 @@ pub fn run(command: StackCommand) -> Result<Response, ResponseBuildError> {
             &request_id,
             idempotency_key.as_deref(),
         ),
+        StackCommand::EnsureDataService {
+            service,
+            profile,
+            request_id,
+            idempotency_key,
+        } => ensure_data_service(
+            &service,
+            profile.as_deref(),
+            &request_id,
+            idempotency_key.as_deref(),
+        ),
         StackCommand::ReloadWorkers {
             runtime_id,
             request_id,
@@ -403,6 +414,32 @@ fn ensure_runtime(
     };
     run_service_operation(ENSURE_OPERATION, |ctx, cancel| {
         ensure_runtime(ctx, &request, cancel)
+    })
+}
+
+fn ensure_data_service(
+    service: &str,
+    profile: Option<&str>,
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::stack_service::{
+        ENSURE_DATA_SERVICE_OPERATION, EnsureDataServiceRequest, ensure_data_service,
+    };
+
+    let request =
+        match EnsureDataServiceRequest::parse(service, profile, request_id, idempotency_key) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(Response::failure(
+                    ENSURE_DATA_SERVICE_OPERATION,
+                    ErrorCode::InvalidInput,
+                    error.message(),
+                ));
+            }
+        };
+    run_service_operation(ENSURE_DATA_SERVICE_OPERATION, |ctx, cancel| {
+        ensure_data_service(ctx, &request, cancel)
     })
 }
 

@@ -171,6 +171,21 @@ pub enum StackCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Start one PostgreSQL line's service (`up -d`) and wait until its
+    /// healthcheck reports `healthy`, under the shared stack lock.
+    EnsureDataService {
+        /// `postgres-<major>`.
+        #[arg(long = "service")]
+        service: String,
+        /// `postgres` or the service's own name, for a line gated behind a
+        /// Compose profile; omitted when it is in the base `up -d`.
+        #[arg(long = "profile")]
+        profile: Option<String>,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
     /// Restart every site process (and so its PHP workers) in one runtime
     /// pool through s6, under the shared stack lock.
     ReloadWorkers {
@@ -310,6 +325,7 @@ impl StackCommand {
             Self::ReloadCaddy { .. } => "stack.reloadCaddy",
             Self::StopIdleRuntime { .. } => "stack.stopIdleRuntime",
             Self::EnsureRuntime { .. } => "stack.ensureRuntime",
+            Self::EnsureDataService { .. } => "stack.ensureDataService",
             Self::ReloadWorkers { .. } => "stack.reloadWorkers",
             Self::FlushFpc { .. } => "stack.flushFpc",
             Self::WriteSiteService { .. } => "stack.writeSiteService",
