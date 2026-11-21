@@ -1521,6 +1521,25 @@ record. With the `failpoints` feature and `WCP_FAILPOINT=stack.afterActivate`
 the engine kills itself right after the files are swapped, which is how the
 workflow tests produce this state.
 
+## `stack.ensureDataService`
+
+`stack ensure-data-service --service postgres-<major> [--profile <profile>]
+--request-id <uuid>` starts one PostgreSQL line of the managed stack
+(`docker compose [--profile <profile>] up -d <service>`) and waits until its
+healthcheck reports `healthy`, under the shared stack lock (a held lock is
+`CONFLICT`). Each line is its own Compose service with its own data volume; the
+operation never touches the data of another line and never migrates anything.
+
+`--service` must be `postgres-` followed by two or three digits; any other
+service (the ingress, a runtime pool, MariaDB) is `INVALID_INPUT`. `--profile`
+is optional and must be `postgres` or the same name as the service, which are
+the profiles the stack template gates the lines behind; anything else is
+`INVALID_INPUT`. A service the Compose file does not define fails the `up` as
+`SUBPROCESS_FAILED`. A line that does not become healthy in time is `TIMEOUT`
+and a replay of the same idempotency key returns the recorded failure. The
+result is `{"service": "...", "healthyAtUnixSecs": n}`. A service that is
+already healthy is left running. No secret travels in this request.
+
 ## `backup.discardPartial`
 
 `backup discard-partial (--database <name> | --import | --trigger |

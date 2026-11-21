@@ -92,6 +92,32 @@ pub fn ensure_runtime(
     )
 }
 
+pub fn ensure_data_service(
+    ctx: &Context<'_>,
+    req: &EnsureDataServiceRequest,
+    cancel: &CancellationToken,
+) -> Result<EnsureDataServiceResult, Error> {
+    run_admitted(
+        ctx,
+        ENSURE_DATA_SERVICE_OPERATION,
+        req.request_id,
+        req.idempotency_key.as_ref(),
+        || {
+            let mut tail = Vec::new();
+            if let Some(profile) = &req.profile {
+                tail.extend(["--profile", profile.as_str()]);
+            }
+            tail.extend(["up", "-d", req.service.as_str()]);
+            compose(ctx, Stage::Up, &tail, UP_TIMEOUT, cancel)?;
+            wait_healthy(ctx, &req.service, cancel)?;
+            Ok(EnsureDataServiceResult {
+                service: req.service.clone(),
+                healthy_at_unix_secs: unix_now_secs(),
+            })
+        },
+    )
+}
+
 pub fn reload_workers(
     ctx: &Context<'_>,
     req: &RuntimeRequest,

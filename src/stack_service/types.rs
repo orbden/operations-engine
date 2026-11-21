@@ -34,6 +34,8 @@ pub enum RequestError {
     InvalidService,
     InvalidRuntimeId,
     InvalidProfile,
+    InvalidDataService,
+    InvalidDataProfile,
     InvalidRequestId,
     InvalidIdempotencyKey,
     InvalidDomain,
@@ -50,6 +52,10 @@ impl RequestError {
             Self::InvalidService => "service must be ingress or runtime-<runtime id>",
             Self::InvalidRuntimeId => "runtime-id is not a valid runtime pool identifier",
             Self::InvalidProfile => "profile must be php-<major>.<minor>",
+            Self::InvalidDataService => "service must be postgres-<major>",
+            Self::InvalidDataProfile => {
+                "profile must be postgres or the same postgres-<major> as the service"
+            }
             Self::InvalidRequestId => "request-id is not a canonical UUID",
             Self::InvalidIdempotencyKey => "idempotency-key is invalid",
             Self::InvalidDomain => "domain is not a valid site domain",
@@ -163,6 +169,60 @@ impl EnsureRequest {
             idempotency_key,
         })
     }
+}
+
+/// `postgres-<major>`: one PostgreSQL line of the managed stack, each with
+/// its own Compose service and data volume (`images/stack/docker-compose.v2.yml`).
+pub(super) fn valid_postgres_service(service: &str) -> bool {
+    service.strip_prefix("postgres-").is_some_and(|major| {
+        (2..=3).contains(&major.len()) && major.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// Start one optional data service (a PostgreSQL line) of the managed stack.
+pub struct EnsureDataServiceRequest {
+    pub service: String,
+    /// `None` when the service is in the base `up -d`; otherwise the Compose
+    /// profile that gates it: `postgres` (the first line) or the service's
+    /// own name.
+    pub profile: Option<String>,
+    pub request_id: RequestId,
+    pub idempotency_key: Option<IdempotencyKey>,
+}
+
+impl EnsureDataServiceRequest {
+    pub fn parse(
+        service: &str,
+        profile: Option<&str>,
+        request_id: &str,
+        key: Option<&str>,
+    ) -> Result<Self, RequestError> {
+        if !valid_postgres_service(service) {
+            return Err(RequestError::InvalidDataService);
+        }
+        if profile.is_some_and(|p| p != "postgres" && p != service) {
+            return Err(RequestError::InvalidDataProfile);
+        }
+        let request_id =
+            RequestId::parse(request_id).map_err(|_| RequestError::InvalidRequestId)?;
+        let idempotency_key = key
+            .map(IdempotencyKey::parse)
+            .transpose()
+            .map_err(|_| RequestError::InvalidIdempotencyKey)?;
+        Ok(Self {
+            service: service.to_owned(),
+            profile: profile.map(str::to_owned),
+            request_id,
+            idempotency_key,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsureDataServiceResult {
+    pub service: String,
+    pub healthy_at_unix_secs: u64,
 }
 
 /// The runtime pool a `stack.reloadWorkers` / `stack.flushFpc` targets.
