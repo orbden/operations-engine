@@ -75,6 +75,7 @@ pub mod maria_user;
 pub mod mariadb_migrate;
 pub mod meilisearch_upgrade;
 pub mod mutation;
+pub mod node_build;
 pub mod operation_status;
 pub mod permissions;
 pub mod pg_drop;
@@ -189,6 +190,7 @@ pub fn execute(cli: Cli) -> Response {
         Command::Drupal { command } => commands::drupal::run(command),
         Command::Joomla { command } => commands::joomla::run(command),
         Command::Cms { command } => commands::cms::run(command),
+        Command::Node { command } => commands::node::run(command),
         Command::Tool { command } => commands::tool::run(command),
         #[cfg(unix)]
         Command::Security { command } => commands::security::run(command),

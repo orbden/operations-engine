@@ -212,6 +212,7 @@ pub const OPERATIONS: &[&str] = &[
     "cms.clearCache",
     "cms.maintenance",
     "cms.safeMode",
+    "node.build",
     "drupal.automatedCron",
     "drupal.cacheRebuild",
     "drupal.cronRun",

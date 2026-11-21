@@ -124,6 +124,12 @@ pub enum Command {
         command: CmsCommand,
     },
 
+    /// Node.js project operations (build in a throw-away container).
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
+
     /// Host-managed tools (pinned, SHA-256-verified) mounted into runtime
     /// containers.
     Tool {
@@ -186,6 +192,7 @@ impl Command {
             Self::Drupal { command } => command.operation(),
             Self::Joomla { command } => command.operation(),
             Self::Cms { command } => command.operation(),
+            Self::Node { command } => command.operation(),
             Self::Tool { command } => command.operation(),
             Self::Security { command } => command.operation(),
             Self::Agent { command } => command.operation(),
@@ -621,6 +628,29 @@ impl CmsCommand {
             Self::ClearCache { .. } => "cms.clearCache",
             Self::Maintenance { .. } => "cms.maintenance",
             Self::SafeMode { .. } => "cms.safeMode",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NodeCommand {
+    /// Build a Node.js project with `npm ci` and `npm run <script>` in a
+    /// throw-away container of a digest-pinned image, on a private copy of the
+    /// project, and keep the output directory as an engine-owned artifact.
+    Build {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+}
+
+impl NodeCommand {
+    pub const fn operation(&self) -> &'static str {
+        match self {
+            Self::Build { .. } => "node.build",
         }
     }
 }
