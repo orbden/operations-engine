@@ -369,7 +369,7 @@ pub enum Error {
     },
     /// The application did not become healthy.
     Unhealthy(&'static str),
-    Route(&'static str),
+    Route(String),
     /// The operation failed and undoing it also failed in part.
     RollbackIncomplete(Box<Error>),
     PostCommit {
@@ -417,7 +417,7 @@ impl Error {
                 (code, format!("{step} failed{suffix}"))
             }
             Self::Unhealthy(message) => (ErrorCode::SubprocessFailed, (*message).into()),
-            Self::Route(message) => (ErrorCode::ConfigReloadFailed, (*message).into()),
+            Self::Route(message) => (ErrorCode::ConfigReloadFailed, message.clone()),
             Self::RollbackIncomplete(cause) => (
                 ErrorCode::RollbackIncomplete,
                 format!("{}; undoing it also failed", cause.protocol().1),
@@ -645,18 +645,36 @@ fn activate_route(
     )
     .map(|_| ())
     .map_err(|error| {
-        use ingress::activate::Error as E;
-        // Which stage failed; never the Caddy output, which can quote the route.
+        use ingress::activate::{ComposeFailure, Error as E};
+        // Which stage failed and how the command ended; never the Caddy
+        // output, which can quote the route.
+        let how = |failure: &ComposeFailure| match failure {
+            ComposeFailure::Run(_) => "docker compose could not be run".to_owned(),
+            ComposeFailure::Rejected(d) if d.timed_out => "timed out".to_owned(),
+            ComposeFailure::Rejected(d) => match d.exit_code {
+                Some(code) => format!("exit code {code}"),
+                None => "no exit code".to_owned(),
+            },
+        };
         Error::Route(match error {
-            E::HashGuardMismatch => "the domain's route changed while the application was deployed",
-            E::ValidateFailed(_) => "the ingress validation rejected the application route",
-            E::ReloadFailedAndRestored(_) | E::ReloadFailedUnchanged(_) => {
-                "the ingress reload failed; the previous route is live"
+            E::HashGuardMismatch => {
+                "the domain's route changed while the application was deployed".to_owned()
             }
-            E::RecoveryFailed { .. } => {
-                "the ingress reload failed and the previous route is not restored"
+            E::ValidateFailed(f) => format!(
+                "the ingress validation rejected the application route ({})",
+                how(&f)
+            ),
+            E::ReloadFailedAndRestored(f) | E::ReloadFailedUnchanged(f) => {
+                format!(
+                    "the ingress reload failed ({}); the previous route is live",
+                    how(&f)
+                )
             }
-            E::Io(_) | E::Path(_) => "the route file could not be written",
+            E::RecoveryFailed { reload, .. } => format!(
+                "the ingress reload failed ({}) and the previous route is not restored",
+                how(&reload)
+            ),
+            E::Io(_) | E::Path(_) => "the route file could not be written".to_owned(),
         })
     })
 }
@@ -669,7 +687,7 @@ fn remove_route(ctx: &Context<'_>, domain: &Domain, current: &str) -> Result<(),
         &fresh(),
         None,
     )
-    .map_err(|_| Error::Route("the route cannot be removed"))?;
+    .map_err(|_| Error::Route("the route cannot be removed".into()))?;
     let context = ingress::execute::ActivateContext {
         ingress_root: ctx.ingress_root,
         engine_state: ctx.engine_state,
@@ -677,7 +695,7 @@ fn remove_route(ctx: &Context<'_>, domain: &Domain, current: &str) -> Result<(),
     };
     ingress::remove::remove(&context, &request)
         .map(|_| ())
-        .map_err(|_| Error::Route("the route cannot be removed"))
+        .map_err(|_| Error::Route("the route cannot be removed".into()))
 }
 
 /// The status code the ingress itself gets for `/` of the domain.
@@ -703,13 +721,15 @@ fn probe_through_ingress(ctx: &Context<'_>, domain: &Domain) -> Result<(), Error
                 &url,
             ],
         )
-        .map_err(|_| Error::Route("the ingress check could not run"))?;
+        .map_err(|_| Error::Route("the ingress check could not run".into()))?;
     let text = output.stdout.text();
     let code: u16 = text.trim().parse().unwrap_or(0);
     if exited_ok(&output) && (100..500).contains(&code) {
         Ok(())
     } else {
-        Err(Error::Route("the ingress did not reach the application"))
+        Err(Error::Route(
+            "the ingress did not reach the application".into(),
+        ))
     }
 }
 

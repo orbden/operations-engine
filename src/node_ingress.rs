@@ -35,29 +35,31 @@ pub fn network_name(domain: &Domain) -> String {
 
 pub fn render(domain: &Domain) -> String {
     let upstream = container_name(domain);
-    format!(
-        "{domain} {{\n\
-    import /etc/wcp/ingress.d/bans/*.caddy\n\
-    encode zstd gzip\n\
-    header {{\n\
-        Strict-Transport-Security \"max-age=31536000\"\n\
-        X-Content-Type-Options \"nosniff\"\n\
-        Referrer-Policy \"strict-origin-when-cross-origin\"\n\
-        Permissions-Policy \"camera=(), microphone=(), geolocation=()\"\n\
-        Content-Security-Policy \"frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'\"\n\
-        -Server\n\
-        -X-Powered-By\n\
-    }}\n\
-    @versioned path /_astro/*\n\
-    header @versioned Cache-Control \"public, max-age=31536000, immutable\"\n\
-    reverse_proxy {upstream}:{APP_PORT} {{\n\
-        header_up X-Request-ID {{http.request.uuid}}\n\
-        header_down X-Request-ID {{http.request.uuid}}\n\
-    }}\n\
-    log_append request_id {{http.request.uuid}}\n\
-    log_append domain {domain}\n\
-}}\n"
-    )
+    // One line per entry (a Rust `\` continuation would drop the indentation).
+    let lines = [
+        format!("{domain} {{"),
+        "    import /etc/wcp/ingress.d/bans/*.caddy".to_owned(),
+        "    encode zstd gzip".to_owned(),
+        "    header {".to_owned(),
+        "        Strict-Transport-Security \"max-age=31536000\"".to_owned(),
+        "        X-Content-Type-Options \"nosniff\"".to_owned(),
+        "        Referrer-Policy \"strict-origin-when-cross-origin\"".to_owned(),
+        "        Permissions-Policy \"camera=(), microphone=(), geolocation=()\"".to_owned(),
+        "        Content-Security-Policy \"frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'\"".to_owned(),
+        "        -Server".to_owned(),
+        "        -X-Powered-By".to_owned(),
+        "    }".to_owned(),
+        "    @versioned path /_astro/*".to_owned(),
+        "    header @versioned Cache-Control \"public, max-age=31536000, immutable\"".to_owned(),
+        format!("    reverse_proxy {upstream}:{APP_PORT} {{"),
+        "        header_up X-Request-ID {http.request.uuid}".to_owned(),
+        "        header_down X-Request-ID {http.request.uuid}".to_owned(),
+        "    }".to_owned(),
+        "    log_append request_id {http.request.uuid}".to_owned(),
+        format!("    log_append domain {domain}"),
+        "}".to_owned(),
+    ];
+    lines.join("\n") + "\n"
 }
 
 #[cfg(test)]
@@ -83,7 +85,13 @@ mod tests {
     fn the_route_proxies_one_private_upstream_with_edge_hardening() {
         let d = domain("app.example.test");
         let route = render(&d);
-        assert!(route.starts_with("app.example.test {\n"));
+        assert!(route.starts_with("app.example.test {\n    import "));
+        assert!(
+            route
+                .lines()
+                .skip(1)
+                .all(|line| line.is_empty() || line.starts_with("    ") || line == "}")
+        );
         assert!(route.contains(&format!("reverse_proxy {}:4321 {{", container_name(&d))));
         assert_eq!(route.matches("reverse_proxy").count(), 1);
         for wanted in [
