@@ -111,6 +111,24 @@ pub const CATALOG: &[KindCatalog] = &[
         }],
     },
     KindCatalog {
+        kind: "emdash",
+        entries: &[
+            // The administration UI (sign-in included) of an EmDash site.
+            CatalogEntry {
+                id: "admin",
+                paths: &["/_emdash/admin", "/_emdash/admin/*"],
+                except: &[],
+            },
+            // Its administration API (users, plugins, imports); the public
+            // content API under `/_emdash/api/` stays open.
+            CatalogEntry {
+                id: "api",
+                paths: &["/_emdash/api/admin/*"],
+                except: &[],
+            },
+        ],
+    },
+    KindCatalog {
         kind: "laravel",
         entries: &[CatalogEntry {
             id: "admin",
@@ -484,6 +502,22 @@ pub fn execute(
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn emdash_restricts_its_admin_ui_and_admin_api_only() {
+        let catalog = super::catalog_for("emdash").unwrap();
+        let ids: Vec<&str> = catalog.entries.iter().map(|entry| entry.id).collect();
+        assert_eq!(ids, ["admin", "api"]);
+        let all: Vec<&str> = catalog
+            .entries
+            .iter()
+            .flat_map(|entry| entry.paths.iter().copied())
+            .collect();
+        assert_eq!(
+            all,
+            ["/_emdash/admin", "/_emdash/admin/*", "/_emdash/api/admin/*"]
+        );
+    }
+
     use std::fs;
 
     use super::{

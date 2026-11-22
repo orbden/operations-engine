@@ -645,12 +645,51 @@ pub enum NodeCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Run the server artifact of a build as the domain's Node application:
+    /// its own container and network, a health check, the ingress route; the
+    /// previous container and route come back if any step fails.
+    DeployApp {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+    /// Read the state of a domain's Node application container.
+    AppStatus {
+        #[arg(long = "domain")]
+        domain: String,
+    },
+    /// Restart a domain's Node application and wait until it is healthy.
+    RestartApp {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+    /// Remove a domain's Node application: route, container, network and
+    /// releases (its data directory only when the request says so).
+    RemoveApp {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
 }
 
 impl NodeCommand {
     pub const fn operation(&self) -> &'static str {
         match self {
             Self::Build { .. } => "node.build",
+            Self::DeployApp { .. } => "node.deployApp",
+            Self::AppStatus { .. } => "node.appStatus",
+            Self::RestartApp { .. } => "node.restartApp",
+            Self::RemoveApp { .. } => "node.removeApp",
         }
     }
 }

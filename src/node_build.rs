@@ -57,6 +57,7 @@ const MAX_RUN_OUTPUT: usize = 128 * 1024;
 const MAX_PACKAGE_JSON: u64 = 1024 * 1024;
 const MAX_DEPTH: usize = 32;
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const ARTIFACT_LIMITS: (usize, u64) = (ARTIFACT_MAX_ENTRIES, ARTIFACT_MAX_BYTES);
 const SOURCE_MAX_ENTRIES: usize = 50_000;
 const SOURCE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const ARTIFACT_MAX_ENTRIES: usize = 100_000;
@@ -82,6 +83,13 @@ struct Plan {
     timeout_secs: Option<u64>,
     #[serde(default)]
     ignore_scripts: bool,
+    /// Keep the output directory under its own path together with
+    /// `package.json` and `package-lock.json`, so a server application can be
+    /// started from the artifact (`node.deployApp` installs its production
+    /// dependencies from the lockfile). Default: the artifact is the contents
+    /// of the output directory, for static publishing.
+    #[serde(default)]
+    server: bool,
 }
 
 #[derive(Debug)]
@@ -95,6 +103,7 @@ pub struct Request {
     memory_mb: u32,
     timeout: Duration,
     ignore_scripts: bool,
+    server: bool,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -174,6 +183,7 @@ impl Request {
             memory_mb,
             timeout: Duration::from_secs(timeout_secs),
             ignore_scripts: plan.ignore_scripts,
+            server: plan.server,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError::InvalidRequestId)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -287,19 +297,19 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 /// What a tree copy may take and how it marks the result.
-struct CopyRules {
+pub(crate) struct CopyRules {
     /// Names (file or directory, any depth) that are left out.
-    skip: fn(&str) -> bool,
-    owner: Option<(u32, u32)>,
-    max_entries: usize,
-    max_bytes: u64,
+    pub(crate) skip: fn(&str) -> bool,
+    pub(crate) owner: Option<(u32, u32)>,
+    pub(crate) max_entries: usize,
+    pub(crate) max_bytes: u64,
 }
 
 #[derive(Default)]
-struct Copied {
-    entries: usize,
-    files: usize,
-    bytes: u64,
+pub(crate) struct Copied {
+    pub(crate) entries: usize,
+    pub(crate) files: usize,
+    pub(crate) bytes: u64,
 }
 
 /// Names the staging copy never takes: dependencies are reinstalled from the
@@ -310,14 +320,14 @@ fn skip_for_build(name: &str) -> bool {
         || name.starts_with(".env.")
 }
 
-fn skip_nothing(_: &str) -> bool {
+pub(crate) fn skip_nothing(_: &str) -> bool {
     false
 }
 
 /// A project or artifact tree, copied without following links. Symlinks,
 /// special files and hard-linked files are refused (the copy has to mean what
 /// the source means); sizes and entry counts are bounded.
-fn copy_tree(
+pub(crate) fn copy_tree(
     source: &ManagedRoot,
     destination: &ManagedRoot,
     rules: &CopyRules,
@@ -404,12 +414,16 @@ fn copy_tree(
 
 /// The engine runs as root in production; a build container must then own the
 /// staging copy. An unprivileged engine (tests) cannot and does not chown.
-fn staging_owner(req: &Request) -> Option<(u32, u32)> {
+pub(crate) fn root_owner(uid: u32, gid: u32) -> Option<(u32, u32)> {
     // SAFETY: geteuid has no preconditions and cannot fail.
-    (unsafe { libc::geteuid() } == 0).then_some((req.uid, req.gid))
+    (unsafe { libc::geteuid() } == 0).then_some((uid, gid))
 }
 
-fn exited_ok(output: &ProcessOutput) -> bool {
+fn staging_owner(req: &Request) -> Option<(u32, u32)> {
+    root_owner(req.uid, req.gid)
+}
+
+pub(crate) fn exited_ok(output: &ProcessOutput) -> bool {
     matches!(
         output.termination,
         ProcessTermination::Exited { success: true, .. }
@@ -418,6 +432,56 @@ fn exited_ok(output: &ProcessOutput) -> bool {
 
 fn container_name(req: &Request, phase: &str) -> String {
     format!("wcp-node-build-{}-{phase}", req.request_id)
+}
+
+/// The `docker run` arguments of every sandboxed Node container the engine
+/// starts for a build or an install: non-root identity, no capabilities,
+/// `no-new-privileges`, read-only root file system with a `/tmp` tmpfs, memory
+/// (swap equal) and PID limits, low CPU shares, one bind mount at `/work` and
+/// no other host path. The image and the command follow.
+pub(crate) fn sandbox_run_args(
+    name: &str,
+    identity: (u32, u32),
+    memory_mb: u32,
+    mount_source: &str,
+    image: &str,
+) -> Vec<String> {
+    vec![
+        "run".into(),
+        "--rm".into(),
+        "--name".into(),
+        name.to_owned(),
+        "--user".into(),
+        format!("{}:{}", identity.0, identity.1),
+        "--cap-drop".into(),
+        "ALL".into(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
+        "--read-only".into(),
+        "--tmpfs".into(),
+        "/tmp:rw,exec,nosuid,size=1g".into(),
+        "--pids-limit".into(),
+        PIDS_LIMIT.into(),
+        "--memory".into(),
+        format!("{memory_mb}m"),
+        "--memory-swap".into(),
+        format!("{memory_mb}m"),
+        "--cpu-shares".into(),
+        "512".into(),
+        "--mount".into(),
+        format!("type=bind,source={mount_source},target={WORKDIR}"),
+        "--workdir".into(),
+        WORKDIR.into(),
+        "--env".into(),
+        "HOME=/tmp".into(),
+        "--env".into(),
+        "CI=true".into(),
+        "--env".into(),
+        "npm_config_cache=/tmp/.npm".into(),
+        "--env".into(),
+        "npm_config_update_notifier=false".into(),
+        image.to_owned(),
+    ]
 }
 
 /// One container run with fixed arguments. The container is removed
@@ -436,42 +500,13 @@ fn run_container(
     let Some(source) = source else {
         return Err(Error::Io(invalid("staging path is not usable")));
     };
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        "--rm".into(),
-        "--name".into(),
-        name.clone(),
-        "--user".into(),
-        format!("{}:{}", req.uid, req.gid),
-        "--cap-drop".into(),
-        "ALL".into(),
-        "--security-opt".into(),
-        "no-new-privileges".into(),
-        "--read-only".into(),
-        "--tmpfs".into(),
-        "/tmp:rw,exec,nosuid,size=1g".into(),
-        "--pids-limit".into(),
-        PIDS_LIMIT.into(),
-        "--memory".into(),
-        format!("{}m", req.memory_mb),
-        "--memory-swap".into(),
-        format!("{}m", req.memory_mb),
-        "--cpu-shares".into(),
-        "512".into(),
-        "--mount".into(),
-        format!("type=bind,source={source},target={WORKDIR}"),
-        "--workdir".into(),
-        WORKDIR.into(),
-        "--env".into(),
-        "HOME=/tmp".into(),
-        "--env".into(),
-        "CI=true".into(),
-        "--env".into(),
-        "npm_config_cache=/tmp/.npm".into(),
-        "--env".into(),
-        "npm_config_update_notifier=false".into(),
-        req.image.as_str().to_owned(),
-    ];
+    let mut args = sandbox_run_args(
+        &name,
+        (req.uid, req.gid),
+        req.memory_mb,
+        source,
+        req.image.as_str(),
+    );
     args.extend(argv.iter().map(|arg| (*arg).to_owned()));
     let output = process::run(
         &ProcessRequest::new(ctx.docker_program).args(args),
@@ -534,6 +569,25 @@ fn open_output(work: &ManagedRoot, parts: &[String]) -> Result<ManagedRoot, Erro
         current = current
             .open_child_dir_nofollow(&rel(part.clone()))
             .map_err(missing)?;
+    }
+    Ok(current)
+}
+
+/// Creates the nested output path under `root` (an empty artifact) and
+/// returns the innermost directory.
+fn descend_create(root: &ManagedRoot, parts: &[String]) -> Result<ManagedRoot, Error> {
+    let (first, rest) = parts
+        .split_first()
+        .ok_or(Error::Project("the output directory is invalid"))?;
+    let step = |parent: &ManagedRoot, name: &String| -> Result<ManagedRoot, Error> {
+        let path = rel(name.clone());
+        parent.create_dir(&path).map_err(Error::Io)?;
+        parent.set_mode(&path, 0o755).map_err(Error::Io)?;
+        parent.open_child_dir_nofollow(&path).map_err(Error::Io)
+    };
+    let mut current = step(root, first)?;
+    for name in rest {
+        current = step(&current, name)?;
     }
     Ok(current)
 }
@@ -625,18 +679,33 @@ fn build(
     scope.set_mode(&artifact_rel, 0o755).map_err(Error::Io)?;
     let artifact = scope.open_managed_dir(&artifact_rel).map_err(Error::Io)?;
     let mut taken = Copied::default();
-    copy_tree(
-        &output,
-        &artifact,
-        &CopyRules {
-            skip: skip_nothing,
-            owner: None,
-            max_entries: ARTIFACT_MAX_ENTRIES,
-            max_bytes: ARTIFACT_MAX_BYTES,
-        },
-        0,
-        &mut taken,
-    )?;
+    let rules = CopyRules {
+        skip: skip_nothing,
+        owner: None,
+        max_entries: ARTIFACT_MAX_ENTRIES,
+        max_bytes: ARTIFACT_MAX_BYTES,
+    };
+    if req.server {
+        // `dist/...` stays at `dist/...`, next to the package files the
+        // production install needs.
+        let target = descend_create(&artifact, &req.output_dir)?;
+        copy_tree(&output, &target, &rules, 0, &mut taken)?;
+        for name in ["package.json", "package-lock.json"] {
+            let path = rel(name);
+            let mut input = work.open_regular_read(&path).map_err(Error::Io)?;
+            let mut out = artifact
+                .create_new_file_with_mode(&path, 0o600)
+                .map_err(Error::Io)?;
+            let written = io::copy(&mut (&mut input).take(MAX_PACKAGE_JSON * 8), &mut out)
+                .map_err(Error::Io)?;
+            drop(out);
+            artifact.set_mode(&path, 0o644).map_err(Error::Io)?;
+            taken.files += 1;
+            taken.bytes += written;
+        }
+    } else {
+        copy_tree(&output, &artifact, &rules, 0, &mut taken)?;
+    }
     if taken.files == 0 {
         return Err(Error::Project("the build output directory is empty"));
     }
@@ -1058,6 +1127,29 @@ exit 0
             fs::metadata(&result.log_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn a_server_build_keeps_the_output_path_and_the_package_files() {
+        let f = fixture("");
+        let result = run(&f, r#","server":true"#, ID, None).unwrap();
+        let artifact = Path::new(&result.artifact_path);
+        assert_eq!(
+            fs::read_to_string(artifact.join("dist/index.html")).unwrap(),
+            "hi\n"
+        );
+        assert_eq!(
+            fs::read_to_string(artifact.join("dist/assets/a.js")).unwrap(),
+            "js\n"
+        );
+        assert!(
+            artifact.join("package.json").is_file() && artifact.join("package-lock.json").is_file()
+        );
+        assert!(
+            !artifact.join("index.html").exists(),
+            "the static layout is not used"
+        );
+        assert_eq!(result.files, 4);
     }
 
     #[test]

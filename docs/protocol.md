@@ -306,7 +306,7 @@ journal gets one `releases.prune` entry per delete.
 
 ## `ingress.applyAdminPaths`
 
-Restricts one domain's sensitive admin paths to an IP allowlist, to Basic auth, to both at once, and/or under a per-path rate limit, or removes the restriction. Request file: `{"domain":"example.com","restriction":null}` removes it; otherwise `restriction` is `{"kind","paths":[<catalog ids>],"ips":[<ip or cidr>],"username","passwordHash":"<bcrypt>","rateLimit":{"maxHits":3-10000,"windowMinutes":1-60,"banMinutes":1-1440}}` where at least one of `ips`, the `username`/`passwordHash` pair and `rateLimit` is present. The old `mode` field is still accepted (and checked against the fields). `features.adminPathsCombined` tells a client the engine takes the combined form and `rateLimit`; without it exactly one control is accepted. With both an allowlist and Basic auth, an address outside the allowlist gets 403 before it is asked for a password. The rate limit is not a Caddy directive: the header carries it with the expanded path patterns and the `bruteforce-guard` agent (2.1.0 or newer) bans an address that makes more than `maxHits` non-static requests to those paths within `windowMinutes`, through `ingress.applyBans` (jail `admin_paths`). The catalog (kinds `wordpress`, `drupal`, `joomla`, `laravel`; ids such as `login`, `admin`) is advertised in `features.adminPaths` of `capabilities`, with the public exceptions it keeps open (WordPress `admin-ajax.php`, `admin-post.php`). The engine maps ids to paths, so a request cannot inject a matcher.
+Restricts one domain's sensitive admin paths to an IP allowlist, to Basic auth, to both at once, and/or under a per-path rate limit, or removes the restriction. Request file: `{"domain":"example.com","restriction":null}` removes it; otherwise `restriction` is `{"kind","paths":[<catalog ids>],"ips":[<ip or cidr>],"username","passwordHash":"<bcrypt>","rateLimit":{"maxHits":3-10000,"windowMinutes":1-60,"banMinutes":1-1440}}` where at least one of `ips`, the `username`/`passwordHash` pair and `rateLimit` is present. The old `mode` field is still accepted (and checked against the fields). `features.adminPathsCombined` tells a client the engine takes the combined form and `rateLimit`; without it exactly one control is accepted. With both an allowlist and Basic auth, an address outside the allowlist gets 403 before it is asked for a password. The rate limit is not a Caddy directive: the header carries it with the expanded path patterns and the `bruteforce-guard` agent (2.1.0 or newer) bans an address that makes more than `maxHits` non-static requests to those paths within `windowMinutes`, through `ingress.applyBans` (jail `admin_paths`). The catalog (kinds `wordpress`, `drupal`, `joomla`, `emdash`, `laravel`; ids such as `login`, `admin`, and `api` for EmDash's administration API) is advertised in `features.adminPaths` of `capabilities`, with the public exceptions it keeps open (WordPress `admin-ajax.php`, `admin-post.php`). The engine maps ids to paths, so a request cannot inject a matcher.
 
 It writes `bans/admin-<domain>.caddy`, which every route already imports through `bans/*.caddy` (the same file family as `ingress.applyBans`), with a `host <domain>` matcher so it affects only that site. The file is validated, swapped in, reloaded, and put back if the reload refuses it. An allowlist answers 403 to every other address, Basic auth answers 401; an empty allowlist is refused (it would lock everyone out). Only a bcrypt hash is accepted (use `caddy hash-password`); it is written to the file and never returned, logged or recorded, and the file header (`# wcp-admin-paths {json}`) carries the settings without it so a client can read them back. Removal restores normal access; removing an absent restriction reports `changed: false` after a confirming reload.
 
@@ -1296,7 +1296,10 @@ moves. `uid`/`gid` are the site's non-zero identity. `script` (default
 `package.json`; `outputDir` (default `dist`) is a relative directory of at most
 four plain components; `memoryMb` is 512-8192 (default 2048), `timeoutSecs` is
 60-3600 per container run (default 900); `ignoreScripts` adds
-`--ignore-scripts` to the install.
+`--ignore-scripts` to the install; `server` (default `false`) keeps the output
+directory under its own path (`dist/...`) next to `package.json` and
+`package-lock.json` in the artifact, which is the layout `node.deployApp`
+needs, instead of making the artifact the contents of the output directory.
 
 The project needs `package.json` and `package-lock.json` (`invalid_input`
 otherwise). It is copied into an engine-private staging directory, without
@@ -1326,6 +1329,57 @@ transaction and audit as for `cms.clearCache`; a replay returns the recorded
 result without building again. Publishing a static artifact is
 `site.publishStatic`; this operation does not change any route. Advertised as
 `node.build`.
+
+## `node.deployApp`, `node.appStatus`, `node.restartApp` and `node.removeApp`
+
+One container per Node.js application. `node deploy-app --request-file <root-owned
+JSON> --request-id <uuid> [--idempotency-key <key>]` takes `{domain, projectRoot,
+buildId, image, uid, gid, adapter, memoryMb?, env?, secretEnv?}`; unknown fields
+are rejected. `buildId` names a `node.build` artifact of `projectRoot` made with
+`server: true`: the engine derives the artifact path itself and refuses an
+artifact that lacks `package.json`, `package-lock.json` or the adapter's entry
+file. `adapter` is `astro-node` (`@astrojs/node` standalone, entry
+`dist/server/entry.mjs`); the command is fixed by the adapter and never comes
+from a request. `image` is a digest-pinned reference as for `node.build`.
+`memoryMb` is 256-4096 (default 512). `env` and `secretEnv` map names
+(`[A-Z][A-Z0-9_]*`, not `HOST`, `PORT`, `NODE_ENV`, `HOME`, `PATH`,
+`NODE_OPTIONS`, `WCP_DATA_DIR` or `TMPDIR`) to values of at most 4096 characters
+without control characters, at most 32 each and no name in both.
+
+The engine checks that the ingress container is running and that the domain's
+route is absent or already this operation's route (a route of another kind, a
+disabled or a parked route is `conflict`). It copies the artifact into a release
+directory, installs the production dependencies from the lockfile with `npm ci
+--omit=dev` in the sandbox of `node.build`, creates the application's network
+and joins the ingress to it, moves a previous container aside and starts the
+application: the release is mounted read-only at `/app`, a data directory at
+`/data`; the container runs as the given non-root identity with all capabilities
+dropped, `no-new-privileges`, a read-only root file system and a `/tmp` tmpfs,
+memory (swap equal) and PID limits, bounded logs, `--restart unless-stopped` and
+a health check against its own port; it publishes no host port and shares a
+network only with the ingress. `secretEnv` reaches the container through a
+root-only env file that is removed as soon as the container exists; secrets are
+never in argv, in the response, in the transaction state or in logs. The
+engine waits until the health check passes, writes the domain's route through
+`ingress.activateConfig`'s machinery (a reverse proxy to this container only,
+compression, security headers on this route, immutable caching of `/_astro/*`)
+and requests `/` through the ingress. Any failure removes the new container and
+release, restores the previous container and route and reports the failing
+step; if that undo itself fails the code is `ROLLBACK_INCOMPLETE`. The result
+is `{domain, releaseId, container, network, image, port, health,
+deployedAtUnixSecs}`. The stack and ingress locks are held, and idempotency,
+transaction and audit are as for `node.build`.
+
+`node app-status --domain <domain>` is read-only: `{domain, state, health,
+restartCount, startedAt, image, releaseId, routeManaged}`. `state` is the
+container state or `absent`; a value the engine could not read is `null`, and a
+docker failure other than "no such container" is an error, never `absent`.
+`node restart-app` (`{domain}`) restarts the container and waits for the health
+check. `node remove-app` (`{domain, deleteData?}`) removes the route if it is
+this operation's route (another route is left alone and `routeRemoved` is
+`false`), the container and its network and the releases; the data directory
+stays unless `deleteData` is `true`. Advertised as `node.deployApp`,
+`node.appStatus`, `node.restartApp` and `node.removeApp`.
 
 ## `cms.maintenance`
 
