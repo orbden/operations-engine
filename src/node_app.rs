@@ -644,7 +644,21 @@ fn activate_route(
         ctx.compose,
     )
     .map(|_| ())
-    .map_err(|_| Error::Route("the ingress rejected the application route"))
+    .map_err(|error| {
+        use ingress::activate::Error as E;
+        // Which stage failed; never the Caddy output, which can quote the route.
+        Error::Route(match error {
+            E::HashGuardMismatch => "the domain's route changed while the application was deployed",
+            E::ValidateFailed(_) => "the ingress validation rejected the application route",
+            E::ReloadFailedAndRestored(_) | E::ReloadFailedUnchanged(_) => {
+                "the ingress reload failed; the previous route is live"
+            }
+            E::RecoveryFailed { .. } => {
+                "the ingress reload failed and the previous route is not restored"
+            }
+            E::Io(_) | E::Path(_) => "the route file could not be written",
+        })
+    })
 }
 
 fn remove_route(ctx: &Context<'_>, domain: &Domain, current: &str) -> Result<(), Error> {
