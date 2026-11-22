@@ -10,6 +10,7 @@ already installed.
 
 import json
 import os
+import re
 import subprocess
 
 
@@ -62,6 +63,29 @@ def log_entry(log_file, entry, max_lines=2000):
                 f.writelines(lines[-max_lines:])
     except Exception:
         pass
+
+
+# The Compose project the panel manages; its services carry these labels.
+COMPOSE_PROJECT = "wcp"
+
+
+def compose_service_container(service, running=True):
+    """Id of the container of `service` in the managed Compose project, or ""
+    when there is none. With `running=False` a stopped container counts too,
+    so "not running" and "never created" can be told apart. Raises when Docker
+    cannot be asked: an unreadable answer is not "no container".
+    """
+    if not isinstance(service, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", service):
+        raise ValueError("Invalid Compose service name")
+    argv = ["docker", "ps", "-q"] + ([] if running else ["-a"]) + [
+        "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+        "--filter", f"label=com.docker.compose.service={service}",
+    ]
+    result = run_argv(argv)
+    if result.returncode != 0:
+        raise RuntimeError("Could not list the Compose containers")
+    ids = result.stdout.split()
+    return ids[0] if ids else ""
 
 
 # Older installed agents and tests still reach for the private name.

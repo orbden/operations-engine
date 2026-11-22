@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: backup-agent
-# wcp-agent-version: 1.1.2
+# wcp-agent-version: 1.2.0
 # wcp-agent-description: DB + file backups to S3/B2/R2 with Slack/Discord/webhook notifications
 
 set -euo pipefail
@@ -22,7 +22,7 @@ NOTIFY_FILE = os.path.join(WCP_DIR, "notify.conf")
 RCLONE_CONF = os.path.join(WCP_DIR, "rclone.conf")
 
 sys.path.insert(0, os.path.join(WCP_DIR, "agents"))
-from wcp_agent_lib import make_logger, notify as _notify, run_cmd as _run_cmd, shell_quote, database_dump_command, sql_digest
+from wcp_agent_lib import make_logger, notify as _notify, run_cmd as _run_cmd, shell_quote, database_dump_command, sql_digest, compose_service_container
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
 parser = argparse.ArgumentParser()
@@ -92,7 +92,44 @@ for job in jobs:
             database  = job.get("database", "*")
             local_ret = int(job.get("local_retention_days", 7))
 
-            if database == "*":
+            # PostgreSQL `*` with `lines`: every running line of the stack is
+            # dumped, each database from its own line. A line whose container
+            # exists but is not running, or does not answer, fails the job
+            # instead of being skipped; a line that was never created is
+            # recorded as absent in the manifest.
+            lines = job.get("lines") if db_type == "postgres" and database == "*" else None
+            targets = []  # (database, container, password, line)
+            if lines:
+                manifest["lines"] = []
+                for entry in lines:
+                    line = str(entry.get("line", ""))
+                    service = str(entry.get("service", ""))
+                    if not SAFE_DB_NAME.fullmatch(line) or not SAFE_DB_NAME.fullmatch(service):
+                        raise RuntimeError("Unsupported PostgreSQL line")
+                    line_password = entry.get("password", "")
+                    line_container = compose_service_container(service)
+                    if not line_container:
+                        if compose_service_container(service, running=False):
+                            raise RuntimeError(f"PostgreSQL line {line} exists but is not running")
+                        manifest["lines"].append({"line": line, "state": "absent"})
+                        continue
+                    r = run_cmd(
+                        f"docker exec -e PGPASSWORD={shell_quote(line_password)} {shell_quote(line_container)} psql -U postgres -At "
+                        f"-c 'SELECT datname FROM pg_database WHERE datistemplate = false'"
+                    )
+                    if r.returncode != 0:
+                        raise RuntimeError(f"Database discovery failed on PostgreSQL line {line}")
+                    names = [d.strip() for d in r.stdout.splitlines() if d.strip()]
+                    safe = [d for d in names if SAFE_DB_NAME.match(d)]
+                    for d in set(names) - set(safe):
+                        print(f"[ERR] skipping unsafe database name {d!r}", file=sys.stderr)
+                    if len(safe) != len(names):
+                        raise RuntimeError("Database coverage incomplete: unsupported database name")
+                    manifest["lines"].append({"line": line, "state": "dumped", "databases": len(safe)})
+                    targets += [(d, line_container, line_password, line) for d in safe]
+                if not targets:
+                    raise RuntimeError("Database discovery returned no databases")
+            elif database == "*":
                 if db_type == "mariadb":
                     r = run_cmd(
                         f"docker exec {shell_quote(container)} mariadb -uroot -p{shell_quote(password)} "
@@ -122,17 +159,23 @@ for job in jobs:
                 if len(safe) != len(dbs):
                     raise RuntimeError("Database coverage incomplete: unsupported database name")
                 dbs = safe
+                targets = [(d, container, password, None) for d in dbs]
             else:
-                dbs = [database]
+                targets = [(database, container, password, None)]
 
-            for db in dbs:
+            seen = {}
+            for db, _, _, _ in targets:
+                seen[db] = seen.get(db, 0) + 1
+            for db, db_container, db_password, line in targets:
                 if not SAFE_DB_NAME.fullmatch(db):
                     raise RuntimeError("Unsupported database name")
                 ts_str = time.strftime("%Y%m%d_%H%M%S")
-                fname  = f"{db}_{ts_str}.sql.gz"
+                # Names are unique across lines for databases the panel made;
+                # a name that exists on several lines carries its line.
+                fname  = f"{db}_{line}_{ts_str}.sql.gz" if line and seen[db] > 1 else f"{db}_{ts_str}.sql.gz"
                 fpath  = os.path.join(payload_dir, fname)
 
-                cmd = database_dump_command(db_type, container, password, db) + f" | gzip > {shell_quote(fpath)}"
+                cmd = database_dump_command(db_type, db_container, db_password, db) + f" | gzip > {shell_quote(fpath)}"
 
                 r = run_cmd(cmd)
                 if r.returncode != 0:
@@ -149,7 +192,10 @@ for job in jobs:
                     for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
                         hasher.update(chunk)
                     digest = hasher.hexdigest()
-                manifest["databases"].append({"database": db, "file": fname, "sha256": digest, "sql_sha256": sql_hash})
+                entry = {"database": db, "file": fname, "sha256": digest, "sql_sha256": sql_hash}
+                if line:
+                    entry["line"] = line
+                manifest["databases"].append(entry)
                 size_bytes += os.path.getsize(fpath)
 
         elif job_type == "files":
@@ -254,6 +300,8 @@ for job in jobs:
     }
     if error_msg:
         result["error"] = error_msg
+    if manifest.get("lines"):
+        result["lines"] = manifest["lines"]
     log_entry(result)
     job_results.append(result)
 

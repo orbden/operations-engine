@@ -188,6 +188,7 @@ fn commands(req: &Request) -> Vec<Vec<String>> {
                         vec![format!("ADMINER_DEFAULT_SERVER={service}")],
                         vec![
                             format!("wcp.adminer.domain={domain}"),
+                            format!("wcp.adminer.database-service={service}"),
                             format!(
                                 "wcp.adminer.database-type={}",
                                 if db == DatabaseType::Postgresql {
@@ -329,7 +330,7 @@ mod tests {
             env_of(
                 r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql"}"#
             ),
-            ["ADMINER_DEFAULT_SERVER=postgres-17"]
+            ["ADMINER_DEFAULT_SERVER=postgres-18"]
         );
     }
     #[test]
@@ -346,6 +347,14 @@ mod tests {
             ),
             ["ADMINER_DEFAULT_SERVER=mariadb-13"]
         );
+        for line in ["postgres-18", "postgres-19"] {
+            assert_eq!(
+                env_of(&format!(
+                    r#"{{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql","databaseService":"{line}"}}"#
+                )),
+                [format!("ADMINER_DEFAULT_SERVER={line}")]
+            );
+        }
     }
     #[test]
     fn a_service_outside_the_catalog_or_the_database_type_is_refused() {
@@ -353,7 +362,10 @@ mod tests {
             r#"{"tool":"phpMyAdmin","action":"install","domain":"db.example.com","databaseService":"mariadb-12"}"#,
             r#"{"tool":"phpMyAdmin","action":"install","domain":"db.example.com","databaseService":"x --privileged"}"#,
             r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql","databaseService":"mariadb-13"}"#,
-            r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"mariadb","databaseService":"postgres-17"}"#,
+            r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"mariadb","databaseService":"postgres-18"}"#,
+            r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql","databaseService":"postgres-17"}"#,
+            r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql","databaseService":"postgres-20"}"#,
+            r#"{"tool":"adminer","action":"install","domain":"db.example.com","databaseType":"postgresql","databaseService":"postgres-19 --privileged"}"#,
             r#"{"tool":"adminer","action":"start","databaseService":"mariadb-13"}"#,
         ] {
             assert_eq!(

@@ -354,7 +354,11 @@ the same as for ownership repair.
 `db tool-converge` accepts a root-owned JSON plan selecting exactly
 `phpMyAdmin|adminer` and `install|start|stop`. Install additionally requires a
 validated domain and supports the allowlisted `mariadb|postgresql` Adminer
-default. Container names, images (version plus manifest digest), networks,
+default. An optional `databaseService` picks the Compose service the tool
+connects to from a closed set per database type: `mariadb-11|mariadb-13`, and
+`postgres-18|postgres-19` for PostgreSQL (the default is `postgres-18`); any
+other value is `INVALID_INPUT`. The Adminer container carries the chosen
+service in the label `wcp.adminer.database-service`. Container names, images (version plus manifest digest), networks,
 restart policy, security options, labels, ports, and environment keys are fixed
 by the engine and never accepted as caller-provided command fragments.
 
@@ -604,6 +608,14 @@ are staged beneath `/root/.wcp`, activated with exact modes and reverse-order
 rollback, then `crontab -` is installed over stdin as the final commit step.
 The operation uses a host-wide lock, idempotent transaction state and redacted
 audit records; no submitted config or credential is persisted in engine state.
+The backup config is free-form JSON; a PostgreSQL job for all databases (`*`)
+may carry `lines`, a list of `{line, service, password}` (one per PostgreSQL
+line of the stack). The bundled `backup-agent` then resolves each service's
+container from the Compose labels when it runs and dumps every running line,
+each database from its own line: a line whose container exists but is not
+running, or does not answer, fails the job; a line that was never created is
+recorded as `absent` in the snapshot manifest. The restore drill restores each
+database into its own line's image.
 
 ## `backup.triggerNow`
 

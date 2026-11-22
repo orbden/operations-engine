@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # wcp-agent: backup-restore-drill
-# wcp-agent-version: 1.1.1
+# wcp-agent-version: 1.2.0
 # wcp-agent-description: Restores the latest DB backup into a throwaway container and compares restored schema/data with the immutable snapshot
 
 set -euo pipefail
@@ -15,7 +15,7 @@ from pathlib import Path
 
 WCP_DIR = Path(os.environ.get("WCP_DIR", "/root/.wcp"))
 sys.path.insert(0, str(WCP_DIR / "agents"))
-from wcp_agent_lib import log_entry, notify, run, shell_quote, database_dump_command, sql_digest
+from wcp_agent_lib import log_entry, notify, run, shell_quote, database_dump_command, sql_digest, compose_service_container
 
 backup_dir = WCP_DIR / "backups"
 backup_dir.mkdir(parents=True, exist_ok=True)
@@ -69,10 +69,36 @@ try:
     if job.get("database", "*") != "*" and [e["database"] for e in entries] != [job["database"]]:
         raise RuntimeError("Snapshot database coverage mismatch")
     db_type = job.get("db_type", "mariadb")
-    image = checked("docker inspect --format '{{.Config.Image}}' " + shell_quote(job["container"]), "reading the database container's image")
-    if not image:
-        raise RuntimeError("Database image is unknown")
+
+    def image_of(container, what):
+        found = checked("docker inspect --format '{{.Config.Image}}' " + shell_quote(container), f"reading the {what}'s image")
+        if not found:
+            raise RuntimeError("Database image is unknown")
+        return found
+
+    # A dump from a PostgreSQL line is restored into that line's own image;
+    # a line that is not running cannot be verified, which is an error.
+    line_services = {str(l.get("line")): str(l.get("service")) for l in job.get("lines") or []}
+    images = {}
+
+    def image_for(entry):
+        line = entry.get("line")
+        if not line:
+            if None not in images:
+                images[None] = image_of(job["container"], "database container")
+            return images[None]
+        service = line_services.get(str(line))
+        if not service or not re.fullmatch(r"[A-Za-z0-9_-]+", str(line)):
+            raise RuntimeError(f"Snapshot names a PostgreSQL line the job does not know: {line}")
+        if line not in images:
+            container = compose_service_container(service)
+            if not container:
+                raise RuntimeError(f"PostgreSQL line {line} is not running, so its snapshot cannot be verified")
+            images[line] = image_of(container, f"PostgreSQL line {line}")
+        return images[line]
+
     for entry in entries:
+        image = image_for(entry)
         database = entry["database"]
         if not re.fullmatch(r"[A-Za-z0-9_-]+", database) or Path(entry["file"]).name != entry["file"]:
             raise RuntimeError("Invalid snapshot path/database")
