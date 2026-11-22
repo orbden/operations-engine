@@ -36,9 +36,9 @@ pub enum DatabaseType {
 /// Database services a tool may point at: the closed set of Compose services
 /// the stack catalog can run, per database type.
 pub const MARIADB_SERVICES: &[&str] = &["mariadb-11", "mariadb-13"];
-pub const POSTGRES_SERVICES: &[&str] = &["postgres-17"];
+pub const POSTGRES_SERVICES: &[&str] = &["postgres-18", "postgres-19"];
 pub const DEFAULT_MARIADB_SERVICE: &str = "mariadb-11";
-pub const DEFAULT_POSTGRES_SERVICE: &str = "postgres-17";
+pub const DEFAULT_POSTGRES_SERVICE: &str = "postgres-18";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,7 +57,7 @@ pub struct Request {
     pub domain: Option<Domain>,
     pub database_type: Option<DatabaseType>,
     /// Compose service the tool connects to; `None` means the default of the
-    /// database type (`mariadb-11`, `postgres-17`).
+    /// database type (`mariadb-11`, `postgres-18`).
     pub database_service: Option<&'static str>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,

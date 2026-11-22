@@ -27,6 +27,51 @@ def old_local_sh_esc(s):
     return "'" + str(s).replace("'", "'\\''") + "'"
 
 
+class ComposeServiceContainer(unittest.TestCase):
+    """Asks `docker ps` for one service of the managed Compose project."""
+
+    def fake_docker(self, script):
+        bin_dir = tempfile.mkdtemp()
+        docker = os.path.join(bin_dir, "docker")
+        with open(docker, "w") as f:
+            f.write("#!/bin/sh\n" + script)
+        os.chmod(docker, 0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = bin_dir + os.pathsep + old
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", old))
+        return bin_dir
+
+    def test_running_and_any_container_of_the_managed_project(self):
+        self.fake_docker('printf "%s\\n" "$*" >&2\n'
+                         'case "$*" in *" -a "*) echo stopped1; echo other;; *) echo run1;; esac\n')
+        self.assertEqual(lib.compose_service_container("postgres-18"), "run1")
+        self.assertEqual(lib.compose_service_container("postgres-18", running=False), "stopped1")
+
+    def test_no_container_is_an_empty_string(self):
+        self.fake_docker("exit 0\n")
+        self.assertEqual(lib.compose_service_container("postgres-19"), "")
+
+    def test_an_unreadable_answer_raises_instead_of_meaning_no_container(self):
+        self.fake_docker("exit 1\n")
+        with self.assertRaises(RuntimeError):
+            lib.compose_service_container("postgres-19")
+
+    def test_only_the_managed_project_is_asked_for(self):
+        out = os.path.join(tempfile.mkdtemp(), "argv")
+        self.fake_docker('printf "%s\\n" "$@" > ' + out + "\n")
+        lib.compose_service_container("postgres-18", running=False)
+        argv = open(out).read().split()
+        self.assertIn("label=com.docker.compose.project=wcp", argv)
+        self.assertIn("label=com.docker.compose.service=postgres-18", argv)
+        self.assertIn("-a", argv)
+
+    def test_a_service_name_outside_the_charset_is_refused(self):
+        for bad in ["", "x; id", "PG", "a b", "-x", "../x", None, 5, "a" * 64]:
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                lib.compose_service_container(bad)
+        self.assertEqual(lib.COMPOSE_PROJECT, "wcp")
+
+
 class ShellQuote(unittest.TestCase):
     def test_round_trips_through_sh(self):
         for s in HOSTILE:

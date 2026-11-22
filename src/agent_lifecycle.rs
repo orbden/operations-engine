@@ -196,7 +196,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "backup-agent",
-        version: "1.1.2",
+        version: "1.2.0",
         default_schedule: None,
         configurable_schedule: false,
         script: include_str!("../resources/agents/backup-agent.sh"),
@@ -214,7 +214,7 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         name: "backup-restore-drill",
-        version: "1.1.1",
+        version: "1.2.0",
         default_schedule: Some("0 3 * * *"),
         configurable_schedule: true,
         script: include_str!("../resources/agents/backup-restore-drill.sh"),
@@ -602,7 +602,7 @@ mod tests {
         ),
         (
             "backup-agent",
-            "f4aa2ebcc8cfee90d1db2551c2fddac5c0dc809eeb77a2d9d2c8b0c34a210bac",
+            "33c498f66741ec8236f29b0ffacff4a203b042622ce5555c53e46c158d190aaf",
         ),
         (
             "bruteforce-guard",
@@ -610,7 +610,7 @@ mod tests {
         ),
         (
             "backup-restore-drill",
-            "919ae2cd8993811c9223afd722bf6ffdc90cd680a9675c962169252a06927a4c",
+            "8de6fd7352d37933bd9e6672a66c231b7a09bbdc3fedc3c6afa7d4dff5c8626a",
         ),
         (
             "error-log-digest",
