@@ -87,6 +87,7 @@ enum Application {
     Statamic,
     Craft,
     Typo3,
+    Laravel,
 }
 
 impl Application {
@@ -95,6 +96,7 @@ impl Application {
             Self::Statamic => "statamic",
             Self::Craft => "craft",
             Self::Typo3 => "typo3",
+            Self::Laravel => "laravel",
         }
     }
     const fn package(self) -> &'static str {
@@ -103,12 +105,13 @@ impl Application {
             // Craft 6 is not supported: the major is pinned here.
             Self::Craft => "craftcms/craft:^5",
             Self::Typo3 => "typo3/cms-base-distribution:^14",
+            Self::Laravel => "laravel/laravel",
         }
     }
     /// The directory the web server serves, below the project root.
     const fn docroot(self) -> &'static str {
         match self {
-            Self::Statamic | Self::Typo3 => "public",
+            Self::Statamic | Self::Typo3 | Self::Laravel => "public",
             Self::Craft => "web",
         }
     }
@@ -117,6 +120,7 @@ impl Application {
             Self::Statamic => "/cp",
             Self::Craft => "/admin",
             Self::Typo3 => "/typo3",
+            Self::Laravel => "/",
         }
     }
     /// The Composer package whose locked version is the application's.
@@ -125,11 +129,16 @@ impl Application {
             Self::Statamic => "statamic/cms",
             Self::Craft => "craftcms/cms",
             Self::Typo3 => "typo3/cms-core",
+            Self::Laravel => "laravel/framework",
         }
     }
     /// Whether the application needs a database the panel provisioned.
     const fn needs_database(self) -> bool {
         !matches!(self, Self::Statamic)
+    }
+    /// Whether the install creates an administrator account.
+    const fn has_admin(self) -> bool {
+        !matches!(self, Self::Laravel)
     }
 }
 
@@ -142,8 +151,8 @@ struct Plan {
     gid: u32,
     domain: String,
     application: Application,
-    admin_email: String,
-    admin_password: String,
+    admin_email: Option<String>,
+    admin_password: Option<String>,
     #[serde(default)]
     database: Option<DatabasePlan>,
 }
@@ -217,8 +226,8 @@ pub struct Request {
     gid: u32,
     domain: Domain,
     application: Application,
-    admin_email: String,
-    admin_password: String,
+    admin_email: Option<String>,
+    admin_password: Option<String>,
     database: Option<Database>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
@@ -243,26 +252,30 @@ impl Request {
         {
             return Err(RequestError);
         }
-        validate_email(&plan.admin_email).map_err(|_| RequestError)?;
-        // The address becomes a command-line argument: never an option.
-        if plan.admin_email.starts_with('-') {
-            return Err(RequestError);
-        }
-        validate_bounded(&plan.admin_password, MAX_ADMIN_PASSWORD_BYTES)
-            .map_err(|_| RequestError)?;
-        if plan.admin_password.len() < MIN_ADMIN_PASSWORD_BYTES
-            || plan
-                .admin_password
-                .bytes()
-                .any(|b| matches!(b, b'\n' | b'\r'))
+        // The administrator is given exactly when the application has one.
+        if plan.application.has_admin() != plan.admin_email.is_some()
+            || plan.application.has_admin() != plan.admin_password.is_some()
         {
             return Err(RequestError);
         }
+        if let (Some(email), Some(password)) = (&plan.admin_email, &plan.admin_password) {
+            validate_email(email).map_err(|_| RequestError)?;
+            // The address becomes a command-line argument: never an option.
+            if email.starts_with('-') {
+                return Err(RequestError);
+            }
+            validate_bounded(password, MAX_ADMIN_PASSWORD_BYTES).map_err(|_| RequestError)?;
+            if password.len() < MIN_ADMIN_PASSWORD_BYTES
+                || password.bytes().any(|b| matches!(b, b'\n' | b'\r'))
+            {
+                return Err(RequestError);
+            }
+            if plan.application == Application::Typo3 && !typo3_password_ok(password) {
+                return Err(RequestError);
+            }
+        }
         // The plan names a database exactly when the application needs one.
         if plan.application.needs_database() != plan.database.is_some() {
-            return Err(RequestError);
-        }
-        if plan.application == Application::Typo3 && !typo3_password_ok(&plan.admin_password) {
             return Err(RequestError);
         }
         let database = plan.database.map(Database::parse).transpose()?;
@@ -287,6 +300,15 @@ impl Request {
 
     pub fn project_root(&self) -> &Path {
         &self.project_root
+    }
+
+    /// The administrator's address and password; `Unverified` when the
+    /// application has none (parsing guarantees them otherwise).
+    fn admin(&self) -> Result<(&str, &str), Error> {
+        match (&self.admin_email, &self.admin_password) {
+            (Some(email), Some(password)) => Ok((email, password)),
+            _ => Err(Error::Unverified),
+        }
     }
 }
 
@@ -572,6 +594,7 @@ fn run_install(
     move_into_place(root, staging, docroot)?;
     let output = match req.application {
         Application::Statamic => {
+            let (email, password) = req.admin()?;
             set_env_file(
                 root,
                 req,
@@ -586,14 +609,16 @@ fn run_install(
                 req,
                 root_str,
                 &[],
-                &[(PASSWORD_ENV, &req.admin_password)],
-                &["sh", "-c", MAKE_USER_SCRIPT, "sh", &req.admin_email],
+                &[(PASSWORD_ENV, password)],
+                &["sh", "-c", MAKE_USER_SCRIPT, "sh", email],
                 SETUP_TIMEOUT,
                 cancel,
             )?
         }
         Application::Craft => setup_craft(ctx, req, root, root_str, cancel)?,
         Application::Typo3 => setup_typo3(ctx, req, root_str, cancel)?,
+        // The Laravel setup arrives with its own change.
+        Application::Laravel => return Err(Error::Unverified),
     };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
@@ -714,13 +739,13 @@ fn setup_craft(
         req,
         root_str,
         &[],
-        &[(CRAFT_PASSWORD_ENV, &req.admin_password)],
+        &[(CRAFT_PASSWORD_ENV, req.admin()?.1)],
         &[
             "sh",
             "-c",
             CRAFT_INSTALL_SCRIPT,
             "sh",
-            &req.admin_email,
+            req.admin()?.0,
             req.domain.as_str(),
         ],
         SETUP_TIMEOUT,
@@ -737,6 +762,7 @@ fn setup_typo3(
     cancel: &CancellationToken,
 ) -> Result<ProcessOutput, Error> {
     let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let (email, password) = req.admin()?;
     let driver = match db.driver {
         DatabaseDriver::Mariadb => "mysqli",
         DatabaseDriver::Postgres => "pdo_pgsql",
@@ -747,7 +773,7 @@ fn setup_typo3(
         format!("TYPO3_DB_PORT={}", db.port),
         format!("TYPO3_DB_DBNAME={}", db.name.as_str()),
         format!("TYPO3_DB_USERNAME={}", db.user.as_str()),
-        format!("TYPO3_SETUP_ADMIN_EMAIL={}", req.admin_email),
+        format!("TYPO3_SETUP_ADMIN_EMAIL={email}"),
         format!("TYPO3_SETUP_ADMIN_USERNAME={ADMIN_USER}"),
         format!("TYPO3_SETUP_CREATE_SITE=https://{}/", req.domain.as_str()),
         format!("TYPO3_PROJECT_NAME={}", req.domain.as_str()),
@@ -761,7 +787,7 @@ fn setup_typo3(
         &env,
         &[
             ("TYPO3_DB_PASSWORD", &db.password),
-            ("TYPO3_SETUP_ADMIN_PASSWORD", &req.admin_password),
+            ("TYPO3_SETUP_ADMIN_PASSWORD", password),
         ],
         &[
             "php",
@@ -1497,5 +1523,64 @@ exit 0
         ));
         assert_eq!(g.names(""), ["web"]);
         assert_eq!(g.names("web"), [".user.ini"]);
+    }
+
+    fn laravel_json(admin: bool, db: bool) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&plan("/var/www/example.com", 1000, 1000)).unwrap();
+        value["application"] = "laravel".into();
+        if !admin {
+            let object = value.as_object_mut().unwrap();
+            object.remove("adminEmail");
+            object.remove("adminPassword");
+        }
+        if db {
+            value["database"] = database("mariadb");
+        }
+        value.to_string()
+    }
+
+    #[test]
+    fn laravel_parses_without_administrator() {
+        assert!(Request::parse(&laravel_json(false, true), REQUEST_ID, None).is_ok());
+    }
+
+    #[test]
+    fn laravel_with_administrator_fields_is_rejected() {
+        assert_eq!(
+            Request::parse(&laravel_json(true, true), REQUEST_ID, None).err(),
+            Some(RequestError)
+        );
+    }
+
+    #[test]
+    fn statamic_without_administrator_is_rejected() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&plan("/var/www/example.com", 1000, 1000)).unwrap();
+        for field in ["adminEmail", "adminPassword"] {
+            let mut v = value.clone();
+            v.as_object_mut().unwrap().remove(field);
+            assert!(Request::parse(&v.to_string(), REQUEST_ID, None).is_err());
+        }
+        let object = value.as_object_mut().unwrap();
+        object.remove("adminEmail");
+        object.remove("adminPassword");
+        assert!(Request::parse(&value.to_string(), REQUEST_ID, None).is_err());
+    }
+
+    #[test]
+    fn laravel_requires_a_database_plan() {
+        assert!(Request::parse(&laravel_json(false, false), REQUEST_ID, None).is_err());
+    }
+
+    #[test]
+    fn laravel_application_values() {
+        let app = Application::Laravel;
+        assert_eq!(app.name(), "laravel");
+        assert_eq!(app.package(), "laravel/laravel");
+        assert_eq!(app.docroot(), "public");
+        assert_eq!(app.admin_path(), "/");
+        assert_eq!(app.version_package(), "laravel/framework");
+        assert!(app.needs_database() && !app.has_admin());
     }
 }
