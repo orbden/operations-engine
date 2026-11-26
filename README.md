@@ -40,6 +40,18 @@ its authoritative operation list. The current source includes:
   safety backup.
 - WordPress install, clone, bounded WXR import, updates, cleanup, credential
   rotation, and multisite subsite deletion.
+- `application.install`: installs Laravel, Drupal (draft), Joomla and
+  Nextcloud into an empty site. Composer-based installs run in a staging
+  directory; Joomla and Nextcloud use a pinned archive (`pinned_download`:
+  exact host allowlist, no redirect, size and time limits, SHA-256 checked
+  before unpacking). Database and administrator passwords reach the installer
+  only through the environment, never an argument, result or journal record.
+- Node applications: `node.build` (npm build in a throw-away, digest-pinned
+  container), `node.deployApp`, `node.appStatus`, `node.restartApp` and
+  `node.removeApp` (one container per application).
+- `stack.ensureDataService` starts one PostgreSQL line of the managed stack;
+  `db.provisionPostgresUser` grants the role the `public` schema of its
+  database.
 - A server-side change journal (`site.changeLog.append`, `site.changeLog.list`): who
   changed what, when and with which result, without secrets or one-time links.
 - Permissions repair, Meilisearch lifecycle, system updates, Docker start,
