@@ -48,6 +48,8 @@
 //! options from environment variables, so neither password is in any argv.
 //! The CLI removes `installation/` itself; the engine removes it if it is
 //! left, and reads the version from Joomla's manifest without running PHP.
+//! Nextcloud is not a Composer project: see `nextcloud.rs` for its pinned
+//! archive, its data directory beside the site and its `occ` install.
 //!
 //! Unlike `wordpress.install`, this operation owns what it writes, so a
 //! failure removes exactly the entries it created (kept in memory: a crash
@@ -81,6 +83,8 @@ use crate::{
     },
     wordpress_install::{validate_bounded, validate_email},
 };
+
+mod nextcloud;
 
 pub const OPERATION: &str = "application.install";
 
@@ -141,6 +145,7 @@ enum Application {
     Typo3,
     Laravel,
     Joomla,
+    Nextcloud,
 }
 
 impl Application {
@@ -151,6 +156,7 @@ impl Application {
             Self::Typo3 => "typo3",
             Self::Laravel => "laravel",
             Self::Joomla => "joomla",
+            Self::Nextcloud => "nextcloud",
         }
     }
     const fn package(self) -> &'static str {
@@ -162,12 +168,16 @@ impl Application {
             Self::Laravel => "laravel/laravel",
             // Never a Composer project: `unpack_archive`.
             Self::Joomla => "",
+            // Not a Composer package: installed from its archive.
+            Self::Nextcloud => "",
         }
     }
     /// The directory the web server serves, below the project root.
     const fn docroot(self) -> &'static str {
         match self {
-            Self::Statamic | Self::Typo3 | Self::Laravel | Self::Joomla => "public",
+            Self::Statamic | Self::Typo3 | Self::Laravel | Self::Joomla | Self::Nextcloud => {
+                "public"
+            }
             Self::Craft => "web",
         }
     }
@@ -178,6 +188,7 @@ impl Application {
             Self::Typo3 => "/typo3",
             Self::Laravel => "/",
             Self::Joomla => "/administrator",
+            Self::Nextcloud => "/login",
         }
     }
     /// The Composer package whose locked version is the application's.
@@ -189,6 +200,8 @@ impl Application {
             Self::Laravel => "laravel/framework",
             // Read from Joomla's manifest: `joomla_version`.
             Self::Joomla => "",
+            // Read from `version.php` instead (`nextcloud::version`).
+            Self::Nextcloud => "",
         }
     }
     /// Whether the application needs a database the panel provisioned.
@@ -204,6 +217,7 @@ impl Application {
     const fn archive_hosts(self) -> &'static [&'static str] {
         match self {
             Self::Joomla => &["update.joomla.org"],
+            Self::Nextcloud => &["download.nextcloud.com"],
             _ => &[],
         }
     }
@@ -456,6 +470,14 @@ impl Request {
         {
             return Err(RequestError);
         }
+        // Nextcloud: exactly its release file names, on top of the host.
+        if plan.application == Application::Nextcloud
+            && !archive
+                .as_ref()
+                .is_some_and(|archive| nextcloud::archive_url_ok(&archive.url))
+        {
+            return Err(RequestError);
+        }
         Ok(Self {
             container: ContainerName::parse(&plan.container)
                 .map_err(|_: RestoreRequestError| RequestError)?,
@@ -530,6 +552,10 @@ pub enum Error {
     SetupFailed(ErrorCode),
     /// The installed application's version could not be read back.
     Unverified,
+    /// Nextcloud's data directory beside the site already holds something.
+    DataDirNotEmpty,
+    /// The verified archive does not unpack to the expected tree.
+    ArchiveInvalid,
     PostCommit {
         result: InstallResult,
     },
@@ -597,6 +623,14 @@ impl Error {
                 ErrorCode::Internal,
                 "the installed version could not be read back".into(),
             ),
+            Self::DataDirNotEmpty => (
+                ErrorCode::Conflict,
+                "the data directory beside the site already exists and is not an empty directory; it is never reused or removed by an install".into(),
+            ),
+            Self::ArchiveInvalid => (
+                ErrorCode::ArtifactVerificationFailed,
+                "the archive does not unpack to the expected application tree".into(),
+            ),
             Self::Replayed { code, message } => (*code, message.clone()),
             _ => (
                 ErrorCode::Internal,
@@ -650,7 +684,7 @@ pub fn execute(
         SiteRelativePath::parse(format!("transactions/{}.json", req.request_id)).unwrap();
     let audit_path = SiteRelativePath::parse("audit/events.jsonl").unwrap();
 
-    match install(ctx, content_root, req, cancel) {
+    match install(ctx, content_root, &scope, req, cancel) {
         Ok(result) => {
             state
                 .mark_committed(serde_json::to_value(&result).unwrap())
@@ -684,6 +718,7 @@ pub fn execute(
 fn install(
     ctx: &Context<'_>,
     content_root: &TrustedRoot,
+    scope: &ManagedRoot,
     req: &Request,
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
@@ -702,23 +737,40 @@ fn install(
             .map_err(|_| Error::RootUnavailable)?;
     let docroot = req.application.docroot();
     require_empty(&root, docroot)?;
+    // Nextcloud's data directory beside the site, refused when it holds
+    // anything, before the site changes.
+    let data = match req.application {
+        Application::Nextcloud => Some(nextcloud::prepare_data_dir(content_root, req)?),
+        _ => None,
+    };
     // `site.create` gives the site's UID only the docroot; a Composer
     // application writes `vendor/`, `storage/` and its staging directory
     // beside it, so the project root itself passes to the site's UID. Never
     // recursive, and only after the root was proven empty.
-    root.chown_self(req.uid, req.gid).map_err(Error::Io)?;
+    if let Err(error) = root.chown_self(req.uid, req.gid) {
+        if let Some((content, data)) = &data {
+            nextcloud::undo_data_dir(content, data);
+        }
+        return Err(Error::Io(error));
+    }
 
     let staging = format!(".wcp-install-{}", req.request_id);
     // The root was proven empty but for the docroot and its `.user.ini`:
     // whatever else appears afterwards is the install's own.
     let before = docroot_names(&root, docroot)?;
-    match run_install(ctx, req, &root, root_str, docroot, &staging, cancel) {
+    let data_dir = data.as_ref().map(|(_, data)| data);
+    match run_install(
+        ctx, req, scope, &root, root_str, docroot, &staging, data_dir, cancel,
+    ) {
         Ok(result) => {
             let _ = root.remove_dir_all(&rel(&staging)?);
             Ok(result)
         }
         Err(error) => {
             undo(&root, docroot, &before);
+            if let Some((content, data)) = &data {
+                nextcloud::undo_data_dir(content, data);
+            }
             Err(error)
         }
     }
@@ -766,18 +818,24 @@ fn require_empty(root: &ManagedRoot, docroot: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_install(
     ctx: &Context<'_>,
     req: &Request,
+    scope: &ManagedRoot,
     root: &ManagedRoot,
     root_str: &str,
     docroot: &str,
     staging: &str,
+    data: Option<&nextcloud::DataDir>,
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
     match &req.source {
         Source::Fresh if req.application == Application::Joomla => {
             unpack_archive(ctx, req, root, staging, docroot)?
+        }
+        Source::Fresh if req.application == Application::Nextcloud => {
+            nextcloud::stage(ctx, req, scope, root, staging)?
         }
         Source::Fresh => composer(
             ctx,
@@ -817,6 +875,13 @@ fn run_install(
         Application::Typo3 => setup_typo3(ctx, req, root_str, cancel)?,
         Application::Laravel => setup_laravel(ctx, req, root, root_str, cancel)?,
         Application::Joomla => setup_joomla(ctx, req, root_str, docroot, cancel)?,
+        Application::Nextcloud => nextcloud::setup(
+            ctx,
+            req,
+            &format!("{root_str}/{docroot}"),
+            data.ok_or(Error::Unverified)?,
+            cancel,
+        )?,
     };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
@@ -824,6 +889,7 @@ fn run_install(
 
     let version = match req.application {
         Application::Joomla => finish_joomla(root, root_str, docroot)?,
+        Application::Nextcloud => nextcloud::version(root, docroot)?,
         _ => locked_version(root, req.application)?,
     };
     Ok(InstallResult {
@@ -1688,6 +1754,18 @@ case "$*" in
     echo '<?php class JConfig {}' > "$cwd/configuration.php"
     [ -e "$dir/fail-joomla" ] && exit 1
     [ -e "$dir/keep-installation" ] || rm -rf "$cwd/installation"
+    ;;
+  *maintenance:install*)
+    echo "$NC_INSTALL_DB_PASSWORD|$NC_INSTALL_ADMIN_PASSWORD" >> "$dir/nextcloud.log"
+    for a in "$@"; do data="$a"; done
+    mkdir -p "$cwd/config"
+    echo '<?php $CONFIG = [];' > "$cwd/config/config.php"
+    : > "$data/.ncdata"
+    [ -e "$dir/fail-nextcloud" ] && exit 1
+    ;;
+  *occ*status*)
+    [ -e "$dir/not-installed" ] && { echo '{"installed":false}'; exit 0; }
+    echo '{"installed":true,"version":"35.0.3.2"}'
     ;;
   *typo3*setup*)
     # TYPO3 writes files of its own before it can fail.
@@ -2947,4 +3025,5 @@ exit 0
         assert_eq!(joomla.archive_hosts(), ["update.joomla.org"]);
         assert!(Application::Statamic.archive_hosts().is_empty());
     }
+    mod nextcloud_install;
 }
