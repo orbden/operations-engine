@@ -40,7 +40,7 @@ its authoritative operation list. The current source includes:
   safety backup.
 - WordPress install, clone, bounded WXR import, updates, cleanup, credential
   rotation, and multisite subsite deletion.
-- `application.install`: installs Laravel, Drupal (draft), Joomla and
+- `application.install`: installs Laravel, Joomla and
   Nextcloud into an empty site. Composer-based installs run in a staging
   directory; Joomla and Nextcloud use a pinned archive (`pinned_download`:
   exact host allowlist, no redirect, size and time limits, SHA-256 checked
