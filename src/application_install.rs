@@ -22,6 +22,15 @@
 //!    from, and it is in no result, journal or audit record. The panel
 //!    generates it and shows it once.
 //!
+//! Laravel has no administrator and two sources: Composer's project
+//! template, or a one-time shallow clone of a public HTTPS repository
+//! (`clone_repository`). The repository URL check limits the clone URL only,
+//! not network reach: the repository's `composer.json` can declare its own
+//! repositories (even with `secure-http: false`), names are not resolved, and
+//! one HTTPS redirect is followed. Network policy on the runtime container is
+//! out of scope here. The repository's own code also runs: `key:generate`
+//! and `storage:link` boot its service providers.
+//!
 //! Unlike `wordpress.install`, this operation owns what it writes, so a
 //! failure removes exactly the entries it created (kept in memory: a crash
 //! mid-install leaves them for the retry's non-empty check to report).
@@ -183,8 +192,11 @@ enum Source {
 /// A public HTTPS repository on a DNS name: no userinfo, port, query or
 /// fragment, no IP literal of any form, no name that only resolves locally
 /// (`localhost`, `.local`, `.internal`), no control, space, backslash or
-/// non-ASCII byte, at most 2048 bytes. Names are not resolved here: a public
-/// name that resolves to a private address is not caught.
+/// non-ASCII byte, at most 2048 bytes. A speed bump, not a network boundary:
+/// it limits the clone URL only. Names are not resolved (a public name that
+/// resolves to a private address passes), git follows one HTTPS redirect, and
+/// the repository's `composer.json` can name other repositories (even with
+/// `secure-http: false`). Network policy on the container is out of scope.
 fn validate_repository_url(url: &str) -> Result<(), RequestError> {
     if url.len() > MAX_REPOSITORY_URL_BYTES
         || !url
@@ -725,9 +737,11 @@ fn composer(
 /// Shallow-clones the repository into the staging directory as the site's
 /// UID, HTTPS only (a redirect or submodule to another protocol fails), then
 /// makes it a Laravel project ready to move into place: `.git`, a committed
-/// `.env` and `vendor/` are dropped, `.env` comes from `.env.example`, and
-/// `composer install` runs without scripts (nothing migrates). The URL is in
-/// no error text.
+/// `.env`, `vendor/` and `bootstrap/cache/*.php` (a cached config would
+/// override the `.env` written here) are dropped, `.env` comes from
+/// `.env.example`, and `composer install` runs without scripts or plugins.
+/// That covers the installer's own steps only: the repository's code still
+/// runs when `key:generate` boots its providers. The URL is in no error text.
 fn clone_repository(
     ctx: &Context<'_>,
     req: &Request,
@@ -778,6 +792,7 @@ fn clone_repository(
         }
         .map_err(Error::Io)?;
     }
+    drop_cached_php(&staged)?;
     let is = |name: &str, dir: bool| {
         rel(name).is_ok_and(|path| {
             staged
@@ -806,12 +821,45 @@ fn clone_repository(
             "--no-interaction",
             "--prefer-dist",
             "--no-scripts",
+            "--no-plugins",
             "--no-ansi",
             "--no-progress",
         ],
         cancel,
     )?;
     locked_version(&staged, Application::Laravel).map_err(|_| Error::NotLaravel)?;
+    Ok(())
+}
+
+/// Removes the `*.php` files of a committed `bootstrap/cache/`, keeping the
+/// rest (`.gitignore`). A `bootstrap` or `cache` that is not a plain
+/// directory is not a Laravel project.
+fn drop_cached_php(staged: &ManagedRoot) -> Result<(), Error> {
+    let open = |dir: &ManagedRoot, name: &str| match dir.open_child_dir_nofollow(&rel(name)?) {
+        Ok(inner) => Ok(Some(inner)),
+        Err(_) if dir.symlink_metadata(&rel(name)?).is_err() => Ok(None),
+        Err(_) => Err(Error::NotLaravel),
+    };
+    let Some(bootstrap) = open(staged, "bootstrap")? else {
+        return Ok(());
+    };
+    let Some(cache) = open(&bootstrap, "cache")? else {
+        return Ok(());
+    };
+    for entry in cache.child_entries().map_err(Error::Io)? {
+        let Some(name) = entry.name.to_str() else {
+            continue;
+        };
+        if name.ends_with(".php") {
+            let path = rel(name)?;
+            if entry.is_dir {
+                cache.remove_dir_all(&path)
+            } else {
+                cache.remove_file(&path)
+            }
+            .map_err(Error::Io)?;
+        }
+    }
     Ok(())
 }
 
@@ -953,7 +1001,8 @@ fn setup_craft(
 }
 
 /// Laravel: the database and the site's address go into `.env` (the password
-/// only there, never in an argument), then `key:generate` sets `APP_KEY`.
+/// only there, never in an argument), then `key:generate` sets `APP_KEY` and
+/// `storage:link` links `public/storage`.
 fn setup_laravel(
     ctx: &Context<'_>,
     req: &Request,
@@ -988,7 +1037,7 @@ fn setup_laravel(
             ("DB_PASSWORD", &db.password),
         ],
     )?;
-    exec(
+    let key = exec(
         ctx,
         req,
         root_str,
@@ -1001,6 +1050,19 @@ fn setup_laravel(
             "--force",
             "--no-interaction",
         ],
+        SETUP_TIMEOUT,
+        cancel,
+    )?;
+    if process::error_code(&key.termination).is_some() {
+        return Ok(key);
+    }
+    exec(
+        ctx,
+        req,
+        root_str,
+        &[],
+        &[],
+        &["php", "artisan", "storage:link", "--no-interaction"],
         SETUP_TIMEOUT,
         cancel,
     )
@@ -1344,6 +1406,9 @@ case "$*" in
     ;;
   *key:generate*)
     [ -e "$dir/fail-key" ] && exit 1
+    ;;
+  *storage:link*)
+    [ -e "$dir/fail-link" ] && exit 1
     ;;
   *install/craft*)
     [ -e "$dir/fail-craft" ] && exit 1
@@ -2100,7 +2165,8 @@ exit 0
         let clone = position(" clone ");
         let install = position("composer.phar install ");
         let key = position("key:generate");
-        assert!(clone < install && install < key, "{calls}");
+        let link = position("php artisan storage:link --no-interaction");
+        assert!(clone < install && install < key && key < link, "{calls}");
         assert!(!calls.contains("create-project"), "{calls}");
         let staging = format!(".wcp-install-{REQUEST_ID}");
         for part in [
@@ -2117,7 +2183,7 @@ exit 0
         assert!(
             lines[install].contains(&format!("/example.com/{staging} -e COMPOSER_HOME="))
                 && lines[install].ends_with(
-                    "install --no-dev --no-interaction --prefer-dist --no-scripts --no-ansi --no-progress"
+                    "install --no-dev --no-interaction --prefer-dist --no-scripts --no-plugins --no-ansi --no-progress"
                 ),
             "{calls}"
         );
@@ -2202,5 +2268,44 @@ exit 0
         assert!(!error.protocol().1.contains(GIT_URL));
         assert_eq!(f.names(""), ["public"]);
         assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn laravel_links_storage_after_the_key() {
+        let f = fixture();
+        f.run_plan(&laravel_plan(&f, "mariadb"), REQUEST_ID, None)
+            .unwrap();
+        let calls = f.calls();
+        let key = calls.find("key:generate").unwrap();
+        let link = calls
+            .find("php artisan storage:link --no-interaction")
+            .unwrap();
+        assert!(key < link, "{calls}");
+    }
+
+    #[test]
+    fn a_failed_storage_link_leaves_the_site_empty() {
+        let f = fixture();
+        fs::write(f.dir.path().join("fail-link"), "").unwrap();
+        assert!(matches!(
+            f.run_plan(&laravel_plan(&f, "mariadb"), REQUEST_ID, None),
+            Err(Error::SetupFailed(_))
+        ));
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn git_source_drops_committed_bootstrap_cache() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        let cache = f.dir.path().join("repo/bootstrap/cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(".gitignore"), "*\n!.gitignore\n").unwrap();
+        fs::write(cache.join("config.php"), "<?php return ['app' => []];").unwrap();
+        fs::write(cache.join("packages.php"), "<?php return [];").unwrap();
+        f.run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap();
+        assert_eq!(f.names("bootstrap/cache"), [".gitignore"]);
     }
 }
