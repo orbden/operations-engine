@@ -114,6 +114,9 @@ const PASSWORD_ENV: &str = "STATAMIC_ADMIN_PASSWORD";
 const CRAFT_PASSWORD_ENV: &str = "CRAFT_ADMIN_PASSWORD";
 /// Drush 13 supports Drupal 10.2 and later, so every Drupal 11.
 const DRUSH_PACKAGE: &str = "drush/drush:^13";
+/// Composer's PHP proxy of Drush's entry point; `vendor/bin/drush` is a shell
+/// script, which `php` would only print.
+const DRUSH: &str = "vendor/bin/drush.php";
 /// Drush reads a command's options from `DRUSH_COMMAND_<NAME>_OPTIONS_<OPTION>`
 /// (consolidation/config's `EnvConfig`), so neither secret is an argument.
 const DRUPAL_DB_URL_ENV: &str = "DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL";
@@ -1519,7 +1522,7 @@ fn setup_drupal(
         ],
         &[
             "php",
-            "vendor/bin/drush",
+            DRUSH,
             "site:install",
             "standard",
             "--yes",
@@ -1531,10 +1534,28 @@ fn setup_drupal(
         SETUP_TIMEOUT,
         cancel,
     )?;
-    if process::error_code(&output.termination).is_none() {
-        root.set_mode(&settings, 0o440).map_err(Error::Io)?;
-        root.set_mode(&rel(default)?, 0o555).map_err(Error::Io)?;
+    if process::error_code(&output.termination).is_some() {
+        return Ok(output);
     }
+    // An exit code is not an installed site: Drupal itself has to report a
+    // full bootstrap (settings, database, installed tables).
+    let status = exec(
+        ctx,
+        req,
+        root_str,
+        &[&uri],
+        &[],
+        &["php", DRUSH, "status", "--field=bootstrap"],
+        SETUP_TIMEOUT,
+        cancel,
+    )?;
+    if process::error_code(&status.termination).is_some()
+        || status.stdout.text().trim() != "Successful"
+    {
+        return Err(Error::SetupFailed(ErrorCode::Internal));
+    }
+    root.set_mode(&settings, 0o440).map_err(Error::Io)?;
+    root.set_mode(&rel(default)?, 0o555).map_err(Error::Io)?;
     Ok(output)
 }
 
@@ -1889,9 +1910,13 @@ case "$*" in
   *composer.phar\ require\ drush/drush*)
     [ -e "$dir/fail-drush" ] && exit 1
     mkdir -p "$cwd/vendor/bin"
-    echo '<?php' > "$cwd/vendor/bin/drush"
+    printf '#!/usr/bin/env sh\n' > "$cwd/vendor/bin/drush"
+    echo '<?php' > "$cwd/vendor/bin/drush.php"
     ;;
-  *drush\ site:install*)
+  *drush.php\ status\ --field=bootstrap*)
+    [ -e "$dir/fail-drupal-status" ] || echo Successful
+    ;;
+  *drush.php\ site:install*)
     echo "$DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL|$DRUSH_COMMAND_SITE_INSTALL_OPTIONS_ACCOUNT_PASS" >> "$dir/drupal.log"
     # Drupal writes its settings and files before it can fail.
     echo '$databases = [];' >> "$cwd/web/sites/default/settings.php"
@@ -3242,7 +3267,7 @@ exit 0
                 "-e DRUSH_OPTIONS_URI=https://example.com",
                 "-e DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL",
                 "-e DRUSH_COMMAND_SITE_INSTALL_OPTIONS_ACCOUNT_PASS",
-                "php vendor/bin/drush site:install standard --yes --account-name=admin --account-mail=admin@example.com --site-mail=admin@example.com --site-name=example.com",
+                "php vendor/bin/drush.php site:install standard --yes --account-name=admin --account-mail=admin@example.com --site-mail=admin@example.com --site-name=example.com",
             ] {
                 assert!(calls.contains(part), "{part}\n{calls}");
             }
@@ -3299,7 +3324,7 @@ exit 0
             .expect(&calls);
         let install = calls
             .lines()
-            .position(|l| l.contains("drush site:install"))
+            .position(|l| l.contains("drush.php site:install"))
             .expect(&calls);
         assert!(require < install, "{calls}");
         // Composer ran in the staging directory, as the site's UID.
@@ -3308,13 +3333,21 @@ exit 0
             line.contains("/.wcp-install-") && line.contains("--user"),
             "{line}"
         );
-        assert!(f.site.join("vendor/bin/drush").is_file());
+        assert!(f.site.join("vendor/bin/drush.php").is_file());
+        // Drupal's own bootstrap report, after the install, is the proof.
+        let status = calls
+            .lines()
+            .position(|l| l.contains("php vendor/bin/drush.php status --field=bootstrap"))
+            .expect(&calls);
+        assert!(install < status, "{calls}");
         unlock_drupal(&f);
     }
 
     #[test]
     fn a_failed_drupal_install_leaves_the_site_empty() {
-        for marker in ["fail-drush", "fail-drupal"] {
+        // `fail-drupal-status`: Drush exits 0 but Drupal does not bootstrap,
+        // which is not an installed site.
+        for marker in ["fail-drush", "fail-drupal", "fail-drupal-status"] {
             let f = fixture_for("web");
             fs::write(f.dir.path().join(marker), "").unwrap();
             let error = f
