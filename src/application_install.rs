@@ -1438,7 +1438,8 @@ fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<St
 
 /// Drupal: `settings.php` is made from `default.settings.php` with the site's
 /// domain as the only trusted host and `files/` exists for the site's UID
-/// before `drush site:install` runs; the installer adds `$databases` and
+/// (and the runtime pool's loopback hop as a trusted reverse proxy) before
+/// `drush site:install` runs; the installer adds `$databases` and
 /// `hash_salt` to it. The database URL and the administrator's password reach
 /// Drush only through the environment. Afterwards `settings.php` and
 /// `sites/default` are read-only, as Drupal's status report requires.
@@ -1461,6 +1462,18 @@ fn setup_drupal(
     text.push_str(&format!(
         "\n$settings['trusted_host_patterns'] = ['^{}$'];\n",
         req.domain.as_str().replace('.', "\\.")
+    ));
+    // The runtime pool proxies to the site's own FrankenPHP on loopback with
+    // `Host: 127.0.0.1:<port>`; the site's host arrives only in
+    // `X-Forwarded-Host`. The pool does not trust the ingress, so its
+    // `X-Forwarded-Proto` is always `http` and is not trusted here: Drupal
+    // sees the scheme as http until the pool forwards the original one.
+    text.push_str(concat!(
+        "$settings['reverse_proxy'] = TRUE;\n",
+        "$settings['reverse_proxy_addresses'] = ['127.0.0.1'];\n",
+        "$settings['reverse_proxy_trusted_headers'] = ",
+        "\\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_FOR | ",
+        "\\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_HOST;\n",
     ));
     root.write_atomic(&settings, text.as_bytes())
         .map_err(Error::Io)?;
@@ -3247,6 +3260,14 @@ exit 0
             );
             assert!(
                 settings.contains("$settings['trusted_host_patterns'] = ['^example\\.com$'];\n"),
+                "{settings}"
+            );
+            // The site's own FrankenPHP is reached through the runtime pool
+            // on loopback, with the site's host in `X-Forwarded-Host` only.
+            assert!(
+                settings.contains(
+                    "$settings['reverse_proxy'] = TRUE;\n$settings['reverse_proxy_addresses'] = ['127.0.0.1'];\n$settings['reverse_proxy_trusted_headers'] = \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_FOR | \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_HOST;\n"
+                ),
                 "{settings}"
             );
             assert!(settings.contains("$databases = [];"), "{settings}");
