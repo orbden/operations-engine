@@ -68,6 +68,7 @@ fn install(
     let context = application_install::Context {
         engine_state: &state,
         docker_program: "docker",
+        fetch: &crate::engine::fetch::fetch_reader_bounded,
     };
     match application_install::execute(
         &context,

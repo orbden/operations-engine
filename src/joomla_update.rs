@@ -335,7 +335,7 @@ fn read_text(path: &Path, max: u64) -> Option<String> {
 }
 
 /// `<version>x.y.z</version>` of Joomla's own manifest.
-fn installed_version(root: &Path) -> Result<String, Error> {
+pub(crate) fn installed_version(root: &Path) -> Result<String, Error> {
     let text = read_text(
         &root.join("administrator/manifests/files/joomla.xml"),
         MAX_MANIFEST_XML_BYTES,

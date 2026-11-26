@@ -37,6 +37,18 @@
 //! runs one. The owner switches to the database drivers after the first
 //! migration.
 //!
+//! Joomla is no Composer project: its full package is downloaded from the
+//! project's own release server (the host is fixed here; `pinned_download`
+//! follows no redirect, caps size and time, and writes a 0600 file in the
+//! engine's state) and must hash to the SHA-256 the panel sent from its image
+//! catalog before a byte is unpacked. The package is
+//! unpacked with `tar_extract` (nothing can land outside the staging
+//! directory) straight into the docroot, the tree passes to the site's UID,
+//! and Joomla's CLI installer runs from a fixed `php -r` script that builds its
+//! options from environment variables, so neither password is in any argv.
+//! The CLI removes `installation/` itself; the engine removes it if it is
+//! left, and reads the version from Joomla's manifest without running PHP.
+//!
 //! Unlike `wordpress.install`, this operation owns what it writes, so a
 //! failure removes exactly the entries it created (kept in memory: a crash
 //! mid-install leaves them for the retry's non-empty check to report).
@@ -55,10 +67,12 @@ use crate::{
     filesystem::ManagedRoot,
     host_name::is_dns_name_or_ipv4,
     mutation::preflight,
+    pinned_download,
     process::{
         self, CancellationToken, ProcessLimits, ProcessOutput, ProcessRequest, ProcessRunError,
     },
     site::{Domain, SiteRelativePath, TrustedRoot},
+    tar_extract::{self, Limits},
     transaction::{
         IdempotencyKey, RequestId,
         audit::{self, AuditRecord},
@@ -104,6 +118,20 @@ const MAKE_USER_SCRIPT: &str = "exec php please make:user \"$1\" --super --passw
 /// container, shows it for the few seconds the install runs). `$1` is the
 /// address, `$2` the site's domain.
 const CRAFT_INSTALL_SCRIPT: &str = "exec php craft install/craft --email=\"$1\" --username=admin --password=\"$CRAFT_ADMIN_PASSWORD\" --site-name=\"$2\" --site-url=\"https://$2\" --language=en-US --interactive=0";
+/// Joomla's CLI installer takes every value as an option and the passwords
+/// only so. This fixed script (`php -r`, run in the docroot) builds that argv
+/// inside PHP from the environment, so the only argv any process shows is this
+/// text. `getStringFromOption` reads `$_SERVER['argv']`, Symfony's input too.
+const JOOMLA_INSTALL_SCRIPT: &str = "$e = static fn (string $k): string => (string) getenv($k); $_SERVER['argv'] = $argv = ['installation/joomla.php', 'install', '--no-interaction', '--site-name=' . $e('JOOMLA_SITE_NAME'), '--admin-user=Administrator', '--admin-username=admin', '--admin-password=' . $e('JOOMLA_ADMIN_PASSWORD'), '--admin-email=' . $e('JOOMLA_ADMIN_EMAIL'), '--db-type=' . $e('JOOMLA_DB_TYPE'), '--db-host=' . $e('JOOMLA_DB_HOST'), '--db-user=' . $e('JOOMLA_DB_USER'), '--db-pass=' . $e('JOOMLA_DB_PASSWORD'), '--db-name=' . $e('JOOMLA_DB_NAME'), '--db-encryption=0']; $_SERVER['argc'] = $argc = count($argv); require 'installation/joomla.php';";
+/// Joomla's full package is 28 MiB.
+const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_ARCHIVE_URL_BYTES: usize = 512;
+/// Joomla 6's full package holds about 13 400 entries and 90 MiB.
+const ARCHIVE_LIMITS: Limits = Limits {
+    max_entries: 50_000,
+    max_file_bytes: 512 * 1024 * 1024,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +140,7 @@ enum Application {
     Craft,
     Typo3,
     Laravel,
+    Joomla,
 }
 
 impl Application {
@@ -121,6 +150,7 @@ impl Application {
             Self::Craft => "craft",
             Self::Typo3 => "typo3",
             Self::Laravel => "laravel",
+            Self::Joomla => "joomla",
         }
     }
     const fn package(self) -> &'static str {
@@ -130,12 +160,14 @@ impl Application {
             Self::Craft => "craftcms/craft:^5",
             Self::Typo3 => "typo3/cms-base-distribution:^14",
             Self::Laravel => "laravel/laravel",
+            // Never a Composer project: `unpack_archive`.
+            Self::Joomla => "",
         }
     }
     /// The directory the web server serves, below the project root.
     const fn docroot(self) -> &'static str {
         match self {
-            Self::Statamic | Self::Typo3 | Self::Laravel => "public",
+            Self::Statamic | Self::Typo3 | Self::Laravel | Self::Joomla => "public",
             Self::Craft => "web",
         }
     }
@@ -145,6 +177,7 @@ impl Application {
             Self::Craft => "/admin",
             Self::Typo3 => "/typo3",
             Self::Laravel => "/",
+            Self::Joomla => "/administrator",
         }
     }
     /// The Composer package whose locked version is the application's.
@@ -154,6 +187,8 @@ impl Application {
             Self::Craft => "craftcms/cms",
             Self::Typo3 => "typo3/cms-core",
             Self::Laravel => "laravel/framework",
+            // Read from Joomla's manifest: `joomla_version`.
+            Self::Joomla => "",
         }
     }
     /// Whether the application needs a database the panel provisioned.
@@ -163,6 +198,14 @@ impl Application {
     /// Whether the install creates an administrator account.
     const fn has_admin(self) -> bool {
         !matches!(self, Self::Laravel)
+    }
+    /// The hosts an application's archive may come from; empty for one that
+    /// Composer installs. Exactly then the plan carries an `archive`.
+    const fn archive_hosts(self) -> &'static [&'static str] {
+        match self {
+            Self::Joomla => &["update.joomla.org"],
+            _ => &[],
+        }
     }
 }
 
@@ -181,6 +224,36 @@ struct Plan {
     database: Option<DatabasePlan>,
     #[serde(default)]
     source: Source,
+    #[serde(default)]
+    archive: Option<ArchivePlan>,
+}
+
+/// The pinned archive the panel took from its image catalog.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArchivePlan {
+    url: String,
+    sha256: String,
+}
+
+/// `https://<one of hosts>/<path>`: no port, userinfo, query, fragment,
+/// percent-encoding, backslash, empty, `.` or `..` segment, space or control
+/// byte, at most 512 bytes. The host is compared exactly (lowercase).
+fn archive_url_ok(url: &str, hosts: &[&str]) -> bool {
+    let Some((host, path)) = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return false;
+    };
+    url.len() <= MAX_ARCHIVE_URL_BYTES
+        && url
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'?' | b'#' | b'@' | b'%'))
+        && hosts.contains(&host)
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 /// Where the application's files come from: Composer's project template, or
@@ -303,6 +376,7 @@ pub struct Request {
     admin_password: Option<String>,
     database: Option<Database>,
     source: Source,
+    archive: Option<ArchivePlan>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -359,6 +433,29 @@ impl Request {
             }
             validate_repository_url(url)?;
         }
+        let hosts = plan.application.archive_hosts();
+        let archive = match plan.archive {
+            Some(archive)
+                if archive_url_ok(&archive.url, hosts)
+                    && pinned_download::is_sha256_hex(&archive.sha256) =>
+            {
+                Some(archive)
+            }
+            None if hosts.is_empty() => None,
+            _ => return Err(RequestError),
+        };
+        // Joomla's installer takes a host and no port: only the default one.
+        if plan.application == Application::Joomla
+            && database.as_ref().is_some_and(|db| {
+                db.port
+                    != match db.driver {
+                        DatabaseDriver::Mariadb => 3306,
+                        DatabaseDriver::Postgres => 5432,
+                    }
+            })
+        {
+            return Err(RequestError);
+        }
         Ok(Self {
             container: ContainerName::parse(&plan.container)
                 .map_err(|_: RestoreRequestError| RequestError)?,
@@ -371,6 +468,7 @@ impl Request {
             admin_password: plan.admin_password,
             database,
             source: plan.source,
+            archive,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -405,6 +503,8 @@ pub struct InstallResult {
 pub struct Context<'a> {
     pub engine_state: &'a ManagedRoot,
     pub docker_program: &'a str,
+    /// Streams a pinned archive (`engine::fetch::fetch_reader_bounded`).
+    pub fetch: pinned_download::Fetch<'a>,
 }
 
 #[derive(Debug)]
@@ -422,6 +522,11 @@ pub enum Error {
     CloneFailed(ErrorCode),
     /// The cloned repository is not a Laravel project.
     NotLaravel,
+    ArchiveFetch(ErrorCode),
+    /// The downloaded archive does not hash to its pinned SHA-256.
+    ArchiveDigest,
+    /// The archive holds an entry `tar_extract` refuses, or is corrupt.
+    ArchiveUnsafe,
     SetupFailed(ErrorCode),
     /// The installed application's version could not be read back.
     Unverified,
@@ -474,6 +579,18 @@ impl Error {
             Self::NotLaravel => (
                 ErrorCode::InvalidInput,
                 "the repository is not a Laravel project (it needs composer.json, .env.example, public/ and laravel/framework)".into(),
+            ),
+            Self::ArchiveFetch(code) => (
+                *code,
+                "the application archive could not be downloaded from its official server".into(),
+            ),
+            Self::ArchiveDigest => (
+                ErrorCode::ArtifactVerificationFailed,
+                "the downloaded archive does not match its pinned SHA-256; nothing was unpacked".into(),
+            ),
+            Self::ArchiveUnsafe => (
+                ErrorCode::ArtifactVerificationFailed,
+                "the archive holds an entry that cannot be unpacked safely".into(),
             ),
             Self::SetupFailed(code) => (*code, "the application setup failed".into()),
             Self::Unverified => (
@@ -659,6 +776,9 @@ fn run_install(
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
     match &req.source {
+        Source::Fresh if req.application == Application::Joomla => {
+            unpack_archive(ctx, req, root, staging, docroot)?
+        }
         Source::Fresh => composer(
             ctx,
             req,
@@ -696,12 +816,16 @@ fn run_install(
         Application::Craft => setup_craft(ctx, req, root, root_str, cancel)?,
         Application::Typo3 => setup_typo3(ctx, req, root_str, cancel)?,
         Application::Laravel => setup_laravel(ctx, req, root, root_str, cancel)?,
+        Application::Joomla => setup_joomla(ctx, req, root_str, docroot, cancel)?,
     };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
     }
 
-    let version = locked_version(root, req.application)?;
+    let version = match req.application {
+        Application::Joomla => finish_joomla(root, root_str, docroot)?,
+        _ => locked_version(root, req.application)?,
+    };
     Ok(InstallResult {
         application: req.application.name().to_owned(),
         version,
@@ -1080,6 +1204,138 @@ fn setup_laravel(
     )
 }
 
+/// Downloads the pinned archive, checks its digest before anything is
+/// written, unpacks it into `<staging>/<docroot>` (so `move_into_place` puts
+/// it into the docroot) and passes the staged tree to the site's UID.
+fn unpack_archive(
+    ctx: &Context<'_>,
+    req: &Request,
+    root: &ManagedRoot,
+    staging: &str,
+    docroot: &str,
+) -> Result<(), Error> {
+    let archive = req.archive.as_ref().ok_or(Error::Unverified)?;
+    // Into the engine's own state (root only), never the site's tree.
+    let downloads = rel("application-install/downloads")?;
+    ctx.engine_state
+        .create_dir_all(&downloads)
+        .map_err(Error::Io)?;
+    let dir = ctx
+        .engine_state
+        .open_managed_dir(&downloads)
+        .map_err(Error::Io)?;
+    let name = rel(format!("{}.tar.gz", req.request_id))?;
+    let file = pinned_download::download(
+        ctx.fetch,
+        &archive.url,
+        &archive.sha256,
+        MAX_ARCHIVE_BYTES,
+        ARCHIVE_TIMEOUT,
+        &dir,
+        &name,
+    )
+    .map_err(|error| match error {
+        pinned_download::Error::DigestMismatch => Error::ArchiveDigest,
+        pinned_download::Error::Fetch(crate::engine::fetch::Error::Timeout) => {
+            Error::ArchiveFetch(ErrorCode::Timeout)
+        }
+        pinned_download::Error::Fetch(_) | pinned_download::Error::Io(_) => {
+            Error::ArchiveFetch(ErrorCode::ArtifactFetchFailed)
+        }
+    })?;
+    let unpacked = unpack_into(root, req, staging, docroot, file);
+    let _ = dir.remove_file(&name);
+    unpacked
+}
+
+fn unpack_into(
+    root: &ManagedRoot,
+    req: &Request,
+    staging: &str,
+    docroot: &str,
+    file: std::fs::File,
+) -> Result<(), Error> {
+    let target = rel(format!("{staging}/{docroot}"))?;
+    root.create_dir_all(&target).map_err(Error::Io)?;
+    let dest = root.open_managed_dir(&target).map_err(Error::Io)?;
+    tar_extract::extract(
+        flate2::read::GzDecoder::new(std::io::BufReader::new(file)),
+        &dest,
+        ARCHIVE_LIMITS,
+    )
+    .map_err(|_| Error::ArchiveUnsafe)?;
+    let staged = root
+        .open_child_dir_nofollow(&rel(staging)?)
+        .map_err(Error::Io)?;
+    crate::permissions::execute::repair_open_directory(
+        &staged.try_clone_fd().map_err(Error::Io)?,
+        req.uid,
+        req.gid,
+        &[],
+    )
+    .map_err(Error::Io)?;
+    Ok(())
+}
+
+/// Joomla: the CLI installer in the docroot, every value from the
+/// environment (the passwords as `-e NAME` only, see `exec`).
+fn setup_joomla(
+    ctx: &Context<'_>,
+    req: &Request,
+    root_str: &str,
+    docroot: &str,
+    cancel: &CancellationToken,
+) -> Result<ProcessOutput, Error> {
+    let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let (email, password) = req.admin()?;
+    let db_type = match db.driver {
+        DatabaseDriver::Mariadb => "mysqli",
+        DatabaseDriver::Postgres => "pgsql",
+    };
+    let env = [
+        format!("JOOMLA_SITE_NAME={}", req.domain.as_str()),
+        format!("JOOMLA_ADMIN_EMAIL={email}"),
+        format!("JOOMLA_DB_TYPE={db_type}"),
+        format!("JOOMLA_DB_HOST={}", db.host.as_str()),
+        format!("JOOMLA_DB_USER={}", db.user.as_str()),
+        format!("JOOMLA_DB_NAME={}", db.name.as_str()),
+    ];
+    let env: Vec<&str> = env.iter().map(String::as_str).collect();
+    exec(
+        ctx,
+        req,
+        &format!("{root_str}/{docroot}"),
+        &env,
+        &[
+            ("JOOMLA_ADMIN_PASSWORD", password),
+            ("JOOMLA_DB_PASSWORD", &db.password),
+        ],
+        &["php", "-r", JOOMLA_INSTALL_SCRIPT],
+        SETUP_TIMEOUT,
+        cancel,
+    )
+}
+
+/// After a successful CLI run: no `installation/` left, a regular
+/// `configuration.php` readable only by the site's UID and group, and the
+/// version from Joomla's manifest (read, never executed).
+fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<String, Error> {
+    let installation = rel(format!("{docroot}/installation"))?;
+    if root.symlink_metadata(&installation).is_ok() {
+        root.remove_dir_all(&installation).map_err(Error::Io)?;
+    }
+    let config = rel(format!("{docroot}/configuration.php"))?;
+    if !root
+        .symlink_metadata(&config)
+        .is_ok_and(|meta| meta.is_file())
+    {
+        return Err(Error::Unverified);
+    }
+    root.set_mode(&config, 0o640).map_err(Error::Io)?;
+    crate::joomla_update::installed_version(Path::new(&format!("{root_str}/{docroot}")))
+        .map_err(|_| Error::Unverified)
+}
+
 /// TYPO3: `typo3 setup` reads everything from the environment, passwords
 /// included, so nothing secret is in any argument.
 fn setup_typo3(
@@ -1425,6 +1681,14 @@ case "$*" in
   *install/craft*)
     [ -e "$dir/fail-craft" ] && exit 1
     ;;
+  *installation/joomla.php*)
+    echo "$JOOMLA_ADMIN_PASSWORD|$JOOMLA_DB_PASSWORD" >> "$dir/joomla-secrets.log"
+    echo "$cwd" >> "$dir/joomla-cwd.log"
+    # Joomla writes its configuration before it can fail.
+    echo '<?php class JConfig {}' > "$cwd/configuration.php"
+    [ -e "$dir/fail-joomla" ] && exit 1
+    [ -e "$dir/keep-installation" ] || rm -rf "$cwd/installation"
+    ;;
   *typo3*setup*)
     # TYPO3 writes files of its own before it can fail.
     mkdir -p "$cwd/var/log" "$cwd/config/system"
@@ -1442,6 +1706,9 @@ exit 0
         site: PathBuf,
         uid: u32,
         gid: u32,
+        /// What the fake fetcher returns for an archive URL.
+        archive: std::cell::RefCell<Vec<u8>>,
+        fetched: std::cell::Cell<u32>,
     }
 
     fn fixture() -> Fixture {
@@ -1466,6 +1733,8 @@ exit 0
             site,
             uid: meta.uid(),
             gid: meta.gid(),
+            archive: Default::default(),
+            fetched: Default::default(),
             dir,
         }
     }
@@ -1486,10 +1755,16 @@ exit 0
         ) -> Result<InstallResult, Error> {
             let docker = self.dir.path().join("docker");
             let request = Request::parse(json, id, key).unwrap();
+            let fetch = |_: &str, max: u64, _: Duration| {
+                self.fetched.set(self.fetched.get() + 1);
+                let bytes = std::io::Cursor::new(self.archive.borrow().clone());
+                Ok(Box::new(std::io::Read::take(bytes, max)) as Box<dyn std::io::Read>)
+            };
             execute(
                 &Context {
                     engine_state: &self.state,
                     docker_program: docker.to_str().unwrap(),
+                    fetch: &fetch,
                 },
                 &self.content_root,
                 &request,
@@ -2331,5 +2606,345 @@ exit 0
         f.run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
             .unwrap();
         assert_eq!(f.names("bootstrap/cache"), [".gitignore"]);
+    }
+
+    // ── Joomla ───────────────────────────────────────────────────────────
+
+    const JOOMLA_URL: &str =
+        "https://update.joomla.org/releases/6.2.1/Joomla_6.2.1-Stable-Full_Package.tar.gz";
+    const JOOMLA_MANIFEST: &[u8] = b"<extension><version>6.2.1</version></extension>";
+
+    fn gzip(tar: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// The shape of Joomla's full package: the files sit at the top level.
+    fn joomla_archive() -> Vec<u8> {
+        gzip(
+            &crate::test_support::TarArchive::new()
+                .entry("administrator/", b'5', b"", 0o755, "")
+                .entry("administrator/manifests/", b'5', b"", 0o755, "")
+                .entry("administrator/manifests/files/", b'5', b"", 0o755, "")
+                .file("administrator/manifests/files/joomla.xml", JOOMLA_MANIFEST)
+                .entry("installation/", b'5', b"", 0o755, "")
+                .file("installation/joomla.php", b"<?php")
+                .file("index.php", b"<?php")
+                .file("htaccess.txt", b"x")
+                .end(),
+        )
+    }
+
+    fn joomla_plan_with(f: &Fixture, archive: &[u8], db: serde_json::Value) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&plan_for(f, "joomla", PASSWORD, Some(db))).unwrap();
+        value["archive"] = serde_json::json!({
+            "url": JOOMLA_URL,
+            "sha256": crate::util::sha256_hex(archive),
+        });
+        value.to_string()
+    }
+
+    fn joomla_fixture() -> (Fixture, String) {
+        let f = fixture();
+        let archive = joomla_archive();
+        let plan = joomla_plan_with(&f, &archive, database("mariadb"));
+        *f.archive.borrow_mut() = archive;
+        (f, plan)
+    }
+
+    #[test]
+    fn joomla_installs_from_the_pinned_archive_into_the_docroot() {
+        let (f, plan) = joomla_fixture();
+        let result = f.run_plan(&plan, REQUEST_ID, None).unwrap();
+        assert_eq!(result.application, "joomla");
+        assert_eq!(result.version, "6.2.1");
+        assert_eq!(result.admin_url, "https://example.com/administrator");
+        assert_eq!(f.fetched.get(), 1);
+        // Joomla's files are the document root itself; the CLI removed
+        // `installation/` and wrote `configuration.php`.
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(
+            f.names("public"),
+            [
+                ".user.ini",
+                "administrator",
+                "configuration.php",
+                "htaccess.txt",
+                "index.php"
+            ]
+        );
+        let config = f.site.join("public/configuration.php");
+        assert_eq!(
+            fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let meta = fs::metadata(f.site.join("public/administrator/manifests")).unwrap();
+        assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));
+        // The CLI ran once in the docroot, no Composer at all, and neither
+        // password is in any argument; both reached it through the
+        // environment.
+        let calls = f.calls();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        assert!(!calls.contains("composer"), "{calls}");
+        assert!(
+            calls.contains("-e JOOMLA_ADMIN_PASSWORD -e JOOMLA_DB_PASSWORD runtime-1 php -r"),
+            "{calls}"
+        );
+        assert!(calls.contains("-e JOOMLA_DB_TYPE=mysqli"), "{calls}");
+        assert!(calls.contains("-e JOOMLA_DB_HOST=mariadb"), "{calls}");
+        assert!(
+            !calls.contains(PASSWORD) && !calls.contains(DB_PASSWORD),
+            "{calls}"
+        );
+        let secrets = fs::read_to_string(f.dir.path().join("joomla-secrets.log")).unwrap();
+        assert_eq!(secrets.trim(), format!("{PASSWORD}|{DB_PASSWORD}"));
+        let cwd = fs::read_to_string(f.dir.path().join("joomla-cwd.log")).unwrap();
+        assert!(cwd.trim().ends_with("example.com/public"), "{cwd}");
+        // The downloaded file was in the engine's state and is gone.
+        let downloads = f.dir.path().join("state/application-install/downloads");
+        assert_eq!(fs::read_dir(&downloads).unwrap().count(), 0);
+        assert!(!serde_json::to_string(&result).unwrap().contains(PASSWORD));
+    }
+
+    #[test]
+    fn joomla_on_postgres_uses_the_pgsql_driver() {
+        let f = fixture();
+        let archive = joomla_archive();
+        let mut db = database("postgres");
+        db["port"] = 5432.into();
+        db["host"] = "postgres-18".into();
+        let plan = joomla_plan_with(&f, &archive, db);
+        *f.archive.borrow_mut() = archive;
+        f.run_plan(&plan, REQUEST_ID, None).unwrap();
+        let calls = f.calls();
+        assert!(calls.contains("-e JOOMLA_DB_TYPE=pgsql"), "{calls}");
+        assert!(calls.contains("-e JOOMLA_DB_HOST=postgres-18"), "{calls}");
+    }
+
+    #[test]
+    fn a_tampered_archive_is_refused_before_anything_is_written_or_run() {
+        let (f, plan) = joomla_fixture();
+        f.archive.borrow_mut().push(0);
+        let error = f.run_plan(&plan, REQUEST_ID, None).unwrap_err();
+        assert!(matches!(error, Error::ArchiveDigest), "{error:?}");
+        assert_eq!(error.protocol().0, ErrorCode::ArtifactVerificationFailed);
+        assert_eq!(f.calls(), "");
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn an_archive_with_an_escaping_entry_is_refused_and_undone() {
+        for archive in [
+            crate::test_support::TarArchive::new()
+                .file("index.php", b"<?php")
+                .file("../evil.php", b"<?php")
+                .end(),
+            crate::test_support::TarArchive::new()
+                .file("index.php", b"<?php")
+                .entry("up", b'2', b"", 0o777, "../../..")
+                .end(),
+            crate::test_support::TarArchive::new()
+                .file("index.php", b"<?php")
+                .entry("hard", b'1', b"", 0o644, "index.php")
+                .end(),
+        ] {
+            let f = fixture();
+            let archive = gzip(&archive);
+            let plan = joomla_plan_with(&f, &archive, database("mariadb"));
+            *f.archive.borrow_mut() = archive;
+            let error = f.run_plan(&plan, REQUEST_ID, None).unwrap_err();
+            assert!(matches!(error, Error::ArchiveUnsafe), "{error:?}");
+            assert_eq!(f.calls(), "");
+            assert_eq!(f.names(""), ["public"]);
+            assert_eq!(f.names("public"), [".user.ini"]);
+            assert!(!f.site.parent().unwrap().join("evil.php").exists());
+        }
+    }
+
+    #[test]
+    fn a_failed_joomla_install_leaves_the_site_empty() {
+        let (f, plan) = joomla_fixture();
+        fs::write(f.dir.path().join("fail-joomla"), "").unwrap();
+        assert!(matches!(
+            f.run_plan(&plan, REQUEST_ID, None),
+            Err(Error::SetupFailed(_))
+        ));
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn an_installation_directory_joomla_left_behind_is_removed() {
+        let (f, plan) = joomla_fixture();
+        fs::write(f.dir.path().join("keep-installation"), "").unwrap();
+        f.run_plan(&plan, REQUEST_ID, None).unwrap();
+        assert!(!f.site.join("public/installation").exists());
+    }
+
+    #[test]
+    fn joomla_without_a_manifest_version_is_not_success() {
+        let f = fixture();
+        let archive = gzip(
+            &crate::test_support::TarArchive::new()
+                .file("index.php", b"<?php")
+                .end(),
+        );
+        let plan = joomla_plan_with(&f, &archive, database("mariadb"));
+        *f.archive.borrow_mut() = archive;
+        assert!(matches!(
+            f.run_plan(&plan, REQUEST_ID, None),
+            Err(Error::Unverified)
+        ));
+        assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn joomla_plan_table() {
+        let f = fixture();
+        let archive = joomla_archive();
+        let good: serde_json::Value =
+            serde_json::from_str(&joomla_plan_with(&f, &archive, database("mariadb"))).unwrap();
+        let parse = |value: &serde_json::Value| {
+            Request::parse(&value.to_string(), REQUEST_ID, None).is_ok()
+        };
+        assert!(parse(&good));
+        let mut postgres = good.clone();
+        postgres["database"]["driver"] = "postgres".into();
+        postgres["database"]["port"] = 5432.into();
+        assert!(parse(&postgres));
+        let rejected: [(&str, serde_json::Value); 10] = [
+            ("archive", serde_json::Value::Null),
+            ("archive", serde_json::json!({"url": JOOMLA_URL})),
+            (
+                "archive",
+                serde_json::json!({"url": JOOMLA_URL, "sha256": "ab", "extra": 1}),
+            ),
+            (
+                "archive",
+                serde_json::json!({
+                    "url": "https://downloads.joomla.org/cms/joomla6/6-2-1/x.tar.gz",
+                    "sha256": crate::util::sha256_hex(&archive),
+                }),
+            ),
+            (
+                "archive",
+                serde_json::json!({
+                    "url": JOOMLA_URL.replace("https", "http"),
+                    "sha256": crate::util::sha256_hex(&archive),
+                }),
+            ),
+            (
+                "archive",
+                serde_json::json!({"url": JOOMLA_URL, "sha256": "A".repeat(64)}),
+            ),
+            ("source", serde_json::json!({"kind": "git", "url": GIT_URL})),
+            ("database", serde_json::Value::Null),
+            ("adminPassword", serde_json::Value::Null),
+            ("database", {
+                let mut db = database("mariadb");
+                db["port"] = 3307.into();
+                db
+            }),
+        ];
+        for (key, value) in rejected {
+            let mut plan = good.clone();
+            if value.is_null() {
+                plan.as_object_mut().unwrap().remove(key);
+            } else {
+                plan[key] = value.clone();
+            }
+            assert!(!parse(&plan), "{key}: {value}");
+        }
+        let mut postgres_on_maria_port = postgres.clone();
+        postgres_on_maria_port["database"]["port"] = 3306.into();
+        assert!(!parse(&postgres_on_maria_port));
+        // An archive is only for an application that installs from one.
+        let mut statamic: serde_json::Value =
+            serde_json::from_str(&plan(f.site.to_str().unwrap(), f.uid, f.gid)).unwrap();
+        statamic["archive"] = good["archive"].clone();
+        assert!(!parse(&statamic));
+    }
+
+    #[test]
+    fn archive_url_table() {
+        let hosts = &["update.joomla.org"];
+        for url in [JOOMLA_URL, "https://update.joomla.org/a.tar.gz"] {
+            assert!(archive_url_ok(url, hosts), "{url}");
+        }
+        let long = format!("https://update.joomla.org/{}", "a".repeat(512));
+        for url in [
+            "http://update.joomla.org/a.tar.gz",
+            "https://downloads.joomla.org/a.tar.gz",
+            "https://update.joomla.org.evil.test/a.tar.gz",
+            "https://evil.test/update.joomla.org/a.tar.gz",
+            "https://UPDATE.joomla.org/a.tar.gz",
+            "https://update.joomla.org:443/a.tar.gz",
+            "https://user@update.joomla.org/a.tar.gz",
+            "https://update.joomla.org/a.tar.gz?x=1",
+            "https://update.joomla.org/a.tar.gz#x",
+            "https://update.joomla.org/a%2e%2e/b",
+            "https://update.joomla.org/../a.tar.gz",
+            "https://update.joomla.org/./a.tar.gz",
+            "https://update.joomla.org//a.tar.gz",
+            "https://update.joomla.org/a\\b",
+            "https://update.joomla.org/a b",
+            "https://update.joomla.org/a\nb",
+            "https://update.joomla.org/",
+            "https://update.joomla.org",
+            "update.joomla.org/a.tar.gz",
+            "",
+            &long,
+        ] {
+            assert!(!archive_url_ok(url, hosts), "{url:?}");
+        }
+        assert!(!archive_url_ok(JOOMLA_URL, &[]));
+    }
+
+    #[test]
+    fn a_failed_download_writes_nothing_and_keeps_no_file() {
+        let (f, plan) = joomla_fixture();
+        let request = Request::parse(&plan, REQUEST_ID, None).unwrap();
+        let failing = |_: &str,
+                       _: u64,
+                       _: Duration|
+         -> Result<Box<dyn std::io::Read>, crate::engine::fetch::Error> {
+            Err(crate::engine::fetch::Error::Status(404))
+        };
+        let docker = f.dir.path().join("docker");
+        let error = execute(
+            &Context {
+                engine_state: &f.state,
+                docker_program: docker.to_str().unwrap(),
+                fetch: &failing,
+            },
+            &f.content_root,
+            &request,
+            &CancellationToken::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::ArchiveFetch(ErrorCode::ArtifactFetchFailed)),
+            "{error:?}"
+        );
+        assert_eq!(f.calls(), "");
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+        let downloads = f.dir.path().join("state/application-install/downloads");
+        assert_eq!(fs::read_dir(&downloads).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn joomla_application_values() {
+        let joomla = Application::Joomla;
+        assert_eq!(joomla.name(), "joomla");
+        assert_eq!(joomla.docroot(), "public");
+        assert_eq!(joomla.admin_path(), "/administrator");
+        assert!(joomla.needs_database() && joomla.has_admin());
+        assert_eq!(joomla.archive_hosts(), ["update.joomla.org"]);
+        assert!(Application::Statamic.archive_hosts().is_empty());
     }
 }

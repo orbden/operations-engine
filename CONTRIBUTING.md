@@ -59,6 +59,8 @@ with a test instead of making a copy.
 | Captured subprocess output as text | `CapturedOutput::text` | `src/process.rs` |
 | Meilisearch backup name rules | `name_first_ok`, `valid_dump_uid` | `src/meilisearch_upgrade/cleanup.rs` |
 | Shell word in a unit-test fake program | `shell_quote` | `src/test_support.rs` |
+| A ustar archive in a unit test (`TarArchive`) | `tar_header` | `src/test_support.rs` |
+| Unpack a tar into a managed root (no path or symlink escape) | `extract` | `src/tar_extract.rs` |
 | `OWNER/NAME` from a remote URL in scripts | `repo_slug_from_url` | `scripts/repo-slug.sh` |
 
 - Each validator keeps its own limits and character set and shares only the
