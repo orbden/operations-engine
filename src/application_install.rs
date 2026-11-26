@@ -574,16 +574,7 @@ fn run_install(
         root_str,
         &[&home, &cache, "COMPOSER_NO_INTERACTION=1"],
         &[],
-        &[
-            "php",
-            CONTAINER_COMPOSER,
-            "create-project",
-            req.application.package(),
-            staging,
-            "--no-interaction",
-            "--no-ansi",
-            "--no-progress",
-        ],
+        &create_project_args(req.application, staging),
         COMPOSER_TIMEOUT,
         cancel,
     )?;
@@ -634,6 +625,26 @@ fn run_install(
         ),
         completed_at_unix_secs: unix_now_secs(),
     })
+}
+
+/// Laravel's `post-create-project-cmd` runs `artisan migrate` against a
+/// default sqlite file; the install never runs migrations, so its scripts are
+/// skipped (and `.env` is made from `.env.example` in `setup_laravel`).
+fn create_project_args(application: Application, staging: &str) -> Vec<&str> {
+    let mut args = vec![
+        "php",
+        CONTAINER_COMPOSER,
+        "create-project",
+        application.package(),
+        staging,
+        "--no-interaction",
+        "--no-ansi",
+        "--no-progress",
+    ];
+    if application == Application::Laravel {
+        args.push("--no-scripts");
+    }
+    args
 }
 
 /// Moves each top-level entry of the staging directory into the project root;
@@ -768,6 +779,14 @@ fn setup_laravel(
         DatabaseDriver::Postgres => "pgsql",
     };
     let port = db.port.to_string();
+    // `--no-scripts` also skipped the script that copies `.env.example`.
+    if root.symlink_metadata(&rel(".env")?).is_err() {
+        let example = root
+            .read_to_string(&rel(".env.example")?)
+            .map_err(Error::Io)?;
+        root.write_atomic(&rel(".env")?, example.as_bytes())
+            .map_err(Error::Io)?;
+    }
     set_env_file(
         root,
         req,
@@ -1105,7 +1124,16 @@ case "$*" in
       laravel/laravel)
         mkdir -p "$cwd/$staging/public" "$cwd/$staging/app"
         echo '<?php' > "$cwd/$staging/public/index.php"
-        printf 'APP_NAME=Laravel\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n# DB_HOST=127.0.0.1\n' > "$cwd/$staging/.env"
+        printf 'APP_NAME=Laravel\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n# DB_HOST=127.0.0.1\n' > "$cwd/$staging/.env.example"
+        case "$*" in
+          *--no-scripts*) ;;
+          *)
+            cp "$cwd/$staging/.env.example" "$cwd/$staging/.env"
+            mkdir -p "$cwd/$staging/database"
+            : > "$cwd/$staging/database/database.sqlite"
+            echo "artisan migrate --graceful" >> "$dir/calls.log"
+            ;;
+        esac
         echo '{"packages":[{"name":"laravel/framework","version":"v12.1.0"}]}' > "$cwd/$staging/composer.lock"
         ;;
       *) exit 3 ;;
@@ -1633,6 +1661,28 @@ exit 0
         ));
         assert_eq!(f.names(""), ["public"]);
         assert_eq!(f.names("public"), [".user.ini"]);
+    }
+
+    #[test]
+    fn only_laravel_skips_composer_scripts_and_never_migrates() {
+        let f = fixture();
+        f.run_plan(&laravel_plan(&f, "mariadb"), REQUEST_ID, None)
+            .unwrap();
+        let calls = f.calls();
+        assert!(calls.contains("--no-scripts"), "{calls}");
+        assert!(!calls.contains("migrate"), "{calls}");
+        assert!(!f.site.join("database/database.sqlite").exists());
+        assert!(f.site.join(".env").exists());
+        for (docroot, app, password, db) in [
+            ("public", "statamic", PASSWORD, None),
+            ("web", "craft", PASSWORD, Some(database("mariadb"))),
+            ("public", "typo3", TYPO3_PASSWORD, Some(database("mariadb"))),
+        ] {
+            let g = fixture_for(docroot);
+            g.run_plan(&plan_for(&g, app, password, db), REQUEST_ID, None)
+                .unwrap();
+            assert!(!g.calls().contains("--no-scripts"), "{app}");
+        }
     }
 
     fn laravel_json(admin: bool, db: bool) -> String {
