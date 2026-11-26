@@ -31,6 +31,12 @@
 //! out of scope here. The repository's own code also runs: `key:generate`
 //! and `storage:link` boot its service providers.
 //!
+//! The installed `.env` deliberately sets `SESSION_DRIVER=file`,
+//! `CACHE_STORE=file` and `QUEUE_CONNECTION=sync`: the skeleton's `database`
+//! drivers need tables that only a migration creates, and the install never
+//! runs one. The owner switches to the database drivers after the first
+//! migration.
+//!
 //! Unlike `wordpress.install`, this operation owns what it writes, so a
 //! failure removes exactly the entries it created (kept in memory: a crash
 //! mid-install leaves them for the retry's non-empty check to report).
@@ -1001,7 +1007,8 @@ fn setup_craft(
 }
 
 /// Laravel: the database and the site's address go into `.env` (the password
-/// only there, never in an argument), then `key:generate` sets `APP_KEY` and
+/// only there, never in an argument; session, cache and queue are
+/// `file`/`file`/`sync`), then `key:generate` sets `APP_KEY` and
 /// `storage:link` links `public/storage`.
 fn setup_laravel(
     ctx: &Context<'_>,
@@ -1035,6 +1042,11 @@ fn setup_laravel(
             ("DB_DATABASE", db.name.as_str()),
             ("DB_USERNAME", db.user.as_str()),
             ("DB_PASSWORD", &db.password),
+            // The skeleton defaults to the `database` drivers, whose tables
+            // only a migration creates; the install runs none.
+            ("SESSION_DRIVER", "file"),
+            ("CACHE_STORE", "file"),
+            ("QUEUE_CONNECTION", "sync"),
         ],
     )?;
     let key = exec(
@@ -1374,7 +1386,7 @@ case "$*" in
       laravel/laravel)
         mkdir -p "$cwd/$staging/public" "$cwd/$staging/app"
         echo '<?php' > "$cwd/$staging/public/index.php"
-        printf 'APP_NAME=Laravel\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n# DB_HOST=127.0.0.1\n' > "$cwd/$staging/.env.example"
+        printf 'APP_NAME=Laravel\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n# DB_HOST=127.0.0.1\nSESSION_DRIVER=database\nCACHE_STORE=database\nQUEUE_CONNECTION=database\n' > "$cwd/$staging/.env.example"
         case "$*" in
           *--no-scripts*) ;;
           *)
@@ -1900,6 +1912,9 @@ exit 0
                 "DB_DATABASE=site_db".to_owned(),
                 "DB_USERNAME=site_user".to_owned(),
                 format!("DB_PASSWORD={DB_PASSWORD}"),
+                "SESSION_DRIVER=file".to_owned(),
+                "CACHE_STORE=file".to_owned(),
+                "QUEUE_CONNECTION=sync".to_owned(),
             ] {
                 assert!(env.lines().any(|l| l == line), "{line}\n{env}");
             }
@@ -1910,6 +1925,7 @@ exit 0
                 "{calls}"
             );
             assert!(!calls.contains(DB_PASSWORD), "{calls}");
+            assert!(!env.contains("=database"), "{env}");
             assert_eq!(f.names("public"), [".user.ini", "index.php"]);
         }
     }
@@ -2124,7 +2140,7 @@ exit 0
         fs::write(repo.join("composer.json"), "{}").unwrap();
         fs::write(
             repo.join(".env.example"),
-            "APP_NAME=App\nDB_CONNECTION=sqlite\n",
+            "APP_NAME=App\nDB_CONNECTION=sqlite\nSESSION_DRIVER=database\nCACHE_STORE=database\nQUEUE_CONNECTION=database\n",
         )
         .unwrap();
         if with_public {
@@ -2159,6 +2175,14 @@ exit 0
         let env = fs::read_to_string(f.site.join(".env")).unwrap();
         assert!(env.starts_with("APP_NAME=App\n"), "{env}");
         assert!(env.lines().any(|l| l == "DB_CONNECTION=mariadb"), "{env}");
+        for line in [
+            "SESSION_DRIVER=file",
+            "CACHE_STORE=file",
+            "QUEUE_CONNECTION=sync",
+        ] {
+            assert!(env.lines().any(|l| l == line), "{line}\n{env}");
+        }
+        assert!(!env.contains("=database"), "{env}");
         let calls = f.calls();
         let lines: Vec<&str> = calls.lines().collect();
         let position = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
