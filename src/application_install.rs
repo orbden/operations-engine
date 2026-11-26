@@ -38,6 +38,7 @@ use crate::{
     db_restore::{ContainerName, DatabaseName, RestoreRequestError},
     error::ErrorCode,
     filesystem::ManagedRoot,
+    host_name::is_dns_name_or_ipv4,
     mutation::preflight,
     process::{
         self, CancellationToken, ProcessLimits, ProcessOutput, ProcessRequest, ProcessRunError,
@@ -61,6 +62,14 @@ const COMPOSER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_ROOT_BYTES: usize = 4096;
+const MAX_REPOSITORY_URL_BYTES: usize = 2048;
+/// The environment of `git clone`: no prompt, no user or system config (so no
+/// credential helper, `insteadOf` or proxy from the image).
+const GIT_ENV: [&str; 3] = [
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+];
 const MIN_ADMIN_PASSWORD_BYTES: usize = 12;
 const MAX_ADMIN_PASSWORD_BYTES: usize = 256;
 /// The environment variable that carries the administrator's password into
@@ -155,6 +164,52 @@ struct Plan {
     admin_password: Option<String>,
     #[serde(default)]
     database: Option<DatabasePlan>,
+    #[serde(default)]
+    source: Source,
+}
+
+/// Where the application's files come from: Composer's project template, or
+/// a one-time shallow clone of a public HTTPS repository (Laravel only).
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum Source {
+    #[default]
+    Fresh,
+    Git {
+        url: String,
+    },
+}
+
+/// A public HTTPS repository on a DNS name: no userinfo, port, query or
+/// fragment, no IP literal of any form, no name that only resolves locally
+/// (`localhost`, `.local`, `.internal`), no control, space, backslash or
+/// non-ASCII byte, at most 2048 bytes. Names are not resolved here: a public
+/// name that resolves to a private address is not caught.
+fn validate_repository_url(url: &str) -> Result<(), RequestError> {
+    if url.len() > MAX_REPOSITORY_URL_BYTES
+        || !url
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'?' | b'#' | b'@'))
+    {
+        return Err(RequestError);
+    }
+    let (host, path) = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split_once('/'))
+        .ok_or(RequestError)?;
+    let lower = host.to_ascii_lowercase();
+    // A last label that starts with a letter rules out every numeric, hex and
+    // octal address form (`127.1`, `0x7f000001`, `0177.0.0.1`).
+    let tld_ok = lower
+        .rsplit_once('.')
+        .is_some_and(|(_, tld)| tld.starts_with(|c: char| c.is_ascii_alphabetic()));
+    let local = [".localhost", ".local", ".internal"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix));
+    if path.is_empty() || !is_dns_name_or_ipv4(host) || !tld_ok || local {
+        return Err(RequestError);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -229,6 +284,7 @@ pub struct Request {
     admin_email: Option<String>,
     admin_password: Option<String>,
     database: Option<Database>,
+    source: Source,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
 }
@@ -279,6 +335,12 @@ impl Request {
             return Err(RequestError);
         }
         let database = plan.database.map(Database::parse).transpose()?;
+        if let Source::Git { url } = &plan.source {
+            if plan.application != Application::Laravel {
+                return Err(RequestError);
+            }
+            validate_repository_url(url)?;
+        }
         Ok(Self {
             container: ContainerName::parse(&plan.container)
                 .map_err(|_: RestoreRequestError| RequestError)?,
@@ -290,6 +352,7 @@ impl Request {
             admin_email: plan.admin_email,
             admin_password: plan.admin_password,
             database,
+            source: plan.source,
             request_id: RequestId::parse(request_id).map_err(|_| RequestError)?,
             idempotency_key: key
                 .map(IdempotencyKey::parse)
@@ -338,6 +401,9 @@ pub enum Error {
     DocrootMismatch(&'static str),
     ResourceBusy,
     ComposerFailed(ErrorCode),
+    CloneFailed(ErrorCode),
+    /// The cloned repository is not a Laravel project.
+    NotLaravel,
     SetupFailed(ErrorCode),
     /// The installed application's version could not be read back.
     Unverified,
@@ -382,6 +448,14 @@ impl Error {
             Self::ComposerFailed(code) => (
                 *code,
                 "Composer could not create the project (network, package or PHP conflict)".into(),
+            ),
+            Self::CloneFailed(code) => (
+                *code,
+                "the Git repository could not be cloned (not public, not found or network)".into(),
+            ),
+            Self::NotLaravel => (
+                ErrorCode::InvalidInput,
+                "the repository is not a Laravel project (it needs composer.json, .env.example, public/ and laravel/framework)".into(),
             ),
             Self::SetupFailed(code) => (*code, "the application setup failed".into()),
             Self::Unverified => (
@@ -566,20 +640,15 @@ fn run_install(
     staging: &str,
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
-    let home = format!("COMPOSER_HOME={COMPOSER_HOME}");
-    let cache = format!("COMPOSER_CACHE_DIR={COMPOSER_HOME}/cache");
-    let output = exec(
-        ctx,
-        req,
-        root_str,
-        &[&home, &cache, "COMPOSER_NO_INTERACTION=1"],
-        &[],
-        &create_project_args(req.application, staging),
-        COMPOSER_TIMEOUT,
-        cancel,
-    )?;
-    if let Some(code) = process::error_code(&output.termination) {
-        return Err(Error::ComposerFailed(code));
+    match &req.source {
+        Source::Fresh => composer(
+            ctx,
+            req,
+            root_str,
+            &create_project_args(req.application, staging),
+            cancel,
+        )?,
+        Source::Git { url } => clone_repository(ctx, req, root, root_str, staging, url, cancel)?,
     }
 
     move_into_place(root, staging, docroot)?;
@@ -625,6 +694,125 @@ fn run_install(
         ),
         completed_at_unix_secs: unix_now_secs(),
     })
+}
+
+/// Runs the managed Composer as the site's UID in `cwd`.
+fn composer(
+    ctx: &Context<'_>,
+    req: &Request,
+    cwd: &str,
+    args: &[&str],
+    cancel: &CancellationToken,
+) -> Result<(), Error> {
+    let home = format!("COMPOSER_HOME={COMPOSER_HOME}");
+    let cache = format!("COMPOSER_CACHE_DIR={COMPOSER_HOME}/cache");
+    let output = exec(
+        ctx,
+        req,
+        cwd,
+        &[&home, &cache, "COMPOSER_NO_INTERACTION=1"],
+        &[],
+        args,
+        COMPOSER_TIMEOUT,
+        cancel,
+    )?;
+    match process::error_code(&output.termination) {
+        Some(code) => Err(Error::ComposerFailed(code)),
+        None => Ok(()),
+    }
+}
+
+/// Shallow-clones the repository into the staging directory as the site's
+/// UID, HTTPS only (a redirect or submodule to another protocol fails), then
+/// makes it a Laravel project ready to move into place: `.git`, a committed
+/// `.env` and `vendor/` are dropped, `.env` comes from `.env.example`, and
+/// `composer install` runs without scripts (nothing migrates). The URL is in
+/// no error text.
+fn clone_repository(
+    ctx: &Context<'_>,
+    req: &Request,
+    root: &ManagedRoot,
+    root_str: &str,
+    staging: &str,
+    url: &str,
+    cancel: &CancellationToken,
+) -> Result<(), Error> {
+    let output = exec(
+        ctx,
+        req,
+        root_str,
+        &GIT_ENV,
+        &[],
+        &[
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "clone",
+            "--depth",
+            "1",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            url,
+            staging,
+        ],
+        COMPOSER_TIMEOUT,
+        cancel,
+    )?;
+    if let Some(code) = process::error_code(&output.termination) {
+        return Err(Error::CloneFailed(code));
+    }
+    let staged = root
+        .open_child_dir_nofollow(&rel(staging)?)
+        .map_err(Error::Io)?;
+    for name in [".git", ".env", "vendor"] {
+        let path = rel(name)?;
+        match staged.symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => staged.remove_dir_all(&path),
+            Ok(_) => staged.remove_file(&path),
+            Err(_) => Ok(()),
+        }
+        .map_err(Error::Io)?;
+    }
+    let is = |name: &str, dir: bool| {
+        rel(name).is_ok_and(|path| {
+            staged
+                .symlink_metadata(&path)
+                .is_ok_and(|meta| meta.is_dir() == dir && !meta.is_symlink())
+        })
+    };
+    if !is("composer.json", false) || !is(".env.example", false) || !is("public", true) {
+        return Err(Error::NotLaravel);
+    }
+    let example = staged
+        .read_to_string(&rel(".env.example")?)
+        .map_err(|_| Error::NotLaravel)?;
+    staged
+        .write_atomic(&rel(".env")?, example.as_bytes())
+        .map_err(Error::Io)?;
+    composer(
+        ctx,
+        req,
+        &format!("{root_str}/{staging}"),
+        &[
+            "php",
+            CONTAINER_COMPOSER,
+            "install",
+            "--no-dev",
+            "--no-interaction",
+            "--prefer-dist",
+            "--no-scripts",
+            "--no-ansi",
+            "--no-progress",
+        ],
+        cancel,
+    )?;
+    locked_version(&staged, Application::Laravel).map_err(|_| Error::NotLaravel)?;
+    Ok(())
 }
 
 /// Laravel's `post-create-project-cmd` runs `artisan migrate` against a
@@ -1138,6 +1326,16 @@ case "$*" in
         ;;
       *) exit 3 ;;
     esac
+    ;;
+  *" clone "*)
+    [ -e "$dir/fail-clone" ] && exit 128
+    for a in "$@"; do staging="$a"; done
+    cp -R "$dir/repo" "$cwd/$staging"
+    ;;
+  *composer.phar\ install\ *)
+    mkdir -p "$cwd/vendor"
+    echo '<?php' > "$cwd/vendor/autoload.php"
+    cp "$dir/lock" "$cwd/composer.lock"
     ;;
   *make:user*)
     [ -e "$dir/fail-user" ] && exit 1
@@ -1742,5 +1940,267 @@ exit 0
         assert_eq!(app.admin_path(), "/");
         assert_eq!(app.version_package(), "laravel/framework");
         assert!(app.needs_database() && !app.has_admin());
+    }
+
+    #[test]
+    fn repository_url_table() {
+        let longest = format!("https://github.com/{}", "a".repeat(2048 - 19));
+        assert_eq!(longest.len(), 2048);
+        for ok in [
+            "https://github.com/laravel/laravel",
+            "https://git.example.org/team/app.git",
+            longest.as_str(),
+        ] {
+            assert_eq!(validate_repository_url(ok), Ok(()), "{ok:?}");
+        }
+        let too_long = format!("{longest}a");
+        for bad in [
+            "http://github.com/laravel/laravel",
+            "ssh://git@github.com/laravel/laravel",
+            "git@github.com:a/b",
+            "https://user:pass@github.com/a/b",
+            "https://user@github.com/a/b",
+            "https://github.com/a/b?x=1#y",
+            "https://github.com/a/b?x=1",
+            "https://github.com/a/b#y",
+            "-oProxyCommand=x",
+            "https://github.com/a b",
+            "https://github.com/a\tb",
+            "https://github.com/a\nb",
+            "https://github.com/a/b\n",
+            " https://github.com/a/b",
+            "",
+            too_long.as_str(),
+            "https://localhost/a",
+            "https://LOCALHOST/a",
+            "https://127.0.0.1/a",
+            "https://10.0.0.1/a",
+            "https://192.168.1.1/a",
+            "https://169.254.169.254/a",
+            "https://8.8.8.8/a",
+            // IPv6 literals.
+            "https://[::1]/a",
+            "https://[2001:db8::1]/a",
+            "https://[::ffff:127.0.0.1]/a",
+            // Names that only resolve on a local network.
+            "https://printer.local/a",
+            "https://metadata.google.internal/a",
+            "https://app.localhost/a",
+            "https://APP.LOCAL/a",
+            // Numeric, hex and octal address forms.
+            "https://2130706433/a",
+            "https://0x7f000001/a",
+            "https://0177.0.0.1/a",
+            "https://0x7f.0.0.1/a",
+            "https://127.1/a",
+            "https://1.0x7f/a",
+            // Empty or trailing-dot labels, ports, missing path.
+            "https://github.com./a",
+            "https://github..com/a",
+            "https://.github.com/a",
+            "https:///a",
+            "https://github.com:443/a",
+            "https://github.com",
+            "https://github.com/",
+            "https://github/a",
+            "HTTPS://github.com/a",
+            "https://g\u{ef}thub.com/a",
+            "https://github.com\\@evil.com/a",
+            "https://github.com/a\\b",
+        ] {
+            assert_eq!(validate_repository_url(bad), Err(RequestError), "{bad:?}");
+        }
+    }
+
+    fn laravel_git_plan(f: &Fixture, url: &str) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&laravel_plan(f, "mariadb")).unwrap();
+        value["source"] = serde_json::json!({ "kind": "git", "url": url });
+        value.to_string()
+    }
+
+    #[test]
+    fn the_source_is_fresh_by_default_and_git_only_for_laravel() {
+        let f = fixture();
+        let parse = |json: String| Request::parse(&json, REQUEST_ID, None).is_ok();
+        assert!(parse(laravel_plan(&f, "mariadb")));
+        let mut fresh: serde_json::Value =
+            serde_json::from_str(&laravel_plan(&f, "mariadb")).unwrap();
+        fresh["source"] = serde_json::json!({ "kind": "fresh" });
+        assert!(parse(fresh.to_string()));
+        assert!(parse(laravel_git_plan(
+            &f,
+            "https://github.com/laravel/laravel"
+        )));
+        assert!(!parse(laravel_git_plan(&f, "https://127.0.0.1/a")));
+        assert!(!parse(laravel_git_plan(&f, "ssh://github.com/a/b")));
+        let mut extra: serde_json::Value =
+            serde_json::from_str(&laravel_git_plan(&f, "https://github.com/a/b")).unwrap();
+        extra["source"]["branch"] = "main".into();
+        assert!(!parse(extra.to_string()));
+        let mut unknown = fresh.clone();
+        unknown["source"] = serde_json::json!({ "kind": "zip" });
+        assert!(!parse(unknown.to_string()));
+        let mut statamic: serde_json::Value =
+            serde_json::from_str(&plan_for(&f, "statamic", PASSWORD, None)).unwrap();
+        statamic["source"] = serde_json::json!({ "kind": "git", "url": "https://github.com/a/b" });
+        assert!(!parse(statamic.to_string()));
+    }
+
+    const GIT_URL: &str = "https://github.com/example/app";
+    const LARAVEL_LOCK: &str = r#"{"packages":[{"name":"laravel/framework","version":"v12.3.0"}]}"#;
+
+    /// A committed Laravel project the fake `git clone` copies.
+    fn repo(f: &Fixture, lock: &str, with_public: bool) {
+        let repo = f.dir.path().join("repo");
+        fs::create_dir_all(repo.join("app")).unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".git/config"), "[core]").unwrap();
+        fs::write(repo.join("composer.json"), "{}").unwrap();
+        fs::write(
+            repo.join(".env.example"),
+            "APP_NAME=App\nDB_CONNECTION=sqlite\n",
+        )
+        .unwrap();
+        if with_public {
+            fs::create_dir_all(repo.join("public")).unwrap();
+            fs::write(repo.join("public/index.php"), "<?php").unwrap();
+        }
+        fs::write(f.dir.path().join("lock"), lock).unwrap();
+    }
+
+    #[test]
+    fn git_source_installs_after_composer_install() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        let result = f
+            .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap();
+        assert_eq!(result.application, "laravel");
+        assert_eq!(result.version, "12.3.0");
+        assert_eq!(
+            f.names(""),
+            [
+                ".env",
+                ".env.example",
+                "app",
+                "composer.json",
+                "composer.lock",
+                "public",
+                "vendor"
+            ]
+        );
+        assert_eq!(f.names("public"), [".user.ini", "index.php"]);
+        let env = fs::read_to_string(f.site.join(".env")).unwrap();
+        assert!(env.starts_with("APP_NAME=App\n"), "{env}");
+        assert!(env.lines().any(|l| l == "DB_CONNECTION=mariadb"), "{env}");
+        let calls = f.calls();
+        let lines: Vec<&str> = calls.lines().collect();
+        let position = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
+        let clone = position(" clone ");
+        let install = position("composer.phar install ");
+        let key = position("key:generate");
+        assert!(clone < install && install < key, "{calls}");
+        assert!(!calls.contains("create-project"), "{calls}");
+        let staging = format!(".wcp-install-{REQUEST_ID}");
+        for part in [
+            format!("--user {}:{}", f.uid, f.gid),
+            "-e GIT_TERMINAL_PROMPT=0".to_owned(),
+            "-e GIT_CONFIG_GLOBAL=/dev/null".to_owned(),
+            "-e GIT_CONFIG_NOSYSTEM=1".to_owned(),
+            format!(
+                "runtime-1 git -c credential.helper= -c protocol.allow=never -c protocol.https.allow=always clone --depth 1 --no-tags --no-recurse-submodules -- {GIT_URL} {staging}"
+            ),
+        ] {
+            assert!(lines[clone].contains(&part), "{part}\n{calls}");
+        }
+        assert!(
+            lines[install].contains(&format!("/example.com/{staging} -e COMPOSER_HOME="))
+                && lines[install].ends_with(
+                    "install --no-dev --no-interaction --prefer-dist --no-scripts --no-ansi --no-progress"
+                ),
+            "{calls}"
+        );
+    }
+
+    fn assert_refused_and_undone(f: &Fixture) {
+        let error = f
+            .run_plan(&laravel_git_plan(f, GIT_URL), REQUEST_ID, None)
+            .unwrap_err();
+        assert!(matches!(error, Error::NotLaravel), "{error:?}");
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
+        assert!(!f.calls().contains("key:generate"));
+    }
+
+    #[test]
+    fn git_source_without_laravel_framework_is_refused_and_undone() {
+        let f = fixture();
+        repo(
+            &f,
+            r#"{"packages":[{"name":"symfony/symfony","version":"7.1.0"}]}"#,
+            true,
+        );
+        assert_refused_and_undone(&f);
+    }
+
+    #[test]
+    fn git_source_without_public_directory_is_refused_and_undone() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, false);
+        assert_refused_and_undone(&f);
+        // Refused before Composer runs anything from the repository.
+        assert!(
+            !f.calls().contains("composer.phar install"),
+            "{}",
+            f.calls()
+        );
+    }
+
+    #[test]
+    fn git_source_without_env_example_is_refused_and_undone() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        fs::remove_file(f.dir.path().join("repo/.env.example")).unwrap();
+        assert_refused_and_undone(&f);
+    }
+
+    #[test]
+    fn git_source_ignores_committed_env_and_vendor() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        let repo = f.dir.path().join("repo");
+        fs::write(repo.join(".env"), "APP_KEY=committed-secret\n").unwrap();
+        fs::create_dir_all(repo.join("vendor/evil")).unwrap();
+        fs::write(repo.join("vendor/evil/x.php"), "<?php").unwrap();
+        f.run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap();
+        let env = fs::read_to_string(f.site.join(".env")).unwrap();
+        assert!(!env.contains("committed-secret"), "{env}");
+        assert_eq!(f.names("vendor"), ["autoload.php"]);
+    }
+
+    #[test]
+    fn git_source_removes_dot_git() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        f.run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap();
+        assert!(!f.site.join(".git").exists());
+        assert!(!f.site.join(format!(".wcp-install-{REQUEST_ID}")).exists());
+    }
+
+    #[test]
+    fn a_failed_clone_leaves_the_site_as_it_was() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        fs::write(f.dir.path().join("fail-clone"), "").unwrap();
+        let error = f
+            .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap_err();
+        assert!(matches!(error, Error::CloneFailed(_)), "{error:?}");
+        assert!(!error.protocol().1.contains(GIT_URL));
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
     }
 }
