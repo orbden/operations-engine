@@ -925,7 +925,7 @@ fn run_install(
     }
 
     let version = match req.application {
-        Application::Joomla => finish_joomla(root, root_str, docroot)?,
+        Application::Joomla => finish_joomla(root, root_str, docroot, req)?,
         Application::Nextcloud => nextcloud::version(root, docroot)?,
         _ => locked_version(root, req.application)?,
     };
@@ -1422,7 +1422,13 @@ fn setup_joomla(
 /// After a successful CLI run: no `installation/` left, a regular
 /// `configuration.php` readable only by the site's UID and group, and the
 /// version from Joomla's manifest (read, never executed).
-fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<String, Error> {
+fn finish_joomla(
+    root: &ManagedRoot,
+    root_str: &str,
+    docroot: &str,
+    req: &Request,
+) -> Result<String, Error> {
+    let domain = req.domain.as_str();
     let installation = rel(format!("{docroot}/installation"))?;
     if root.symlink_metadata(&installation).is_ok() {
         root.remove_dir_all(&installation).map_err(Error::Io)?;
@@ -1434,6 +1440,22 @@ fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<St
     {
         return Err(Error::Unverified);
     }
+    // The runtime pool forwards the request with `Host` rewritten to its
+    // loopback address, so Joomla would build its redirects from
+    // `http://127.0.0.1:<port>`. `$live_site` pins the public address.
+    let text = root.read_to_string(&config).map_err(Error::Io)?;
+    let empty = "public $live_site = '';";
+    if !text.contains(empty) {
+        return Err(Error::Unverified);
+    }
+    let text = text.replacen(
+        empty,
+        &format!("public $live_site = 'https://{domain}';"),
+        1,
+    );
+    root.write_atomic(&config, text.as_bytes())
+        .map_err(Error::Io)?;
+    root.chown(&config, req.uid, req.gid).map_err(Error::Io)?;
     root.set_mode(&config, 0o640).map_err(Error::Io)?;
     crate::joomla_update::installed_version(Path::new(&format!("{root_str}/{docroot}")))
         .map_err(|_| Error::Unverified)
@@ -1930,7 +1952,7 @@ case "$*" in
     echo "$JOOMLA_ADMIN_PASSWORD|$JOOMLA_DB_PASSWORD" >> "$dir/joomla-secrets.log"
     echo "$cwd" >> "$dir/joomla-cwd.log"
     # Joomla writes its configuration before it can fail.
-    echo '<?php class JConfig {}' > "$cwd/configuration.php"
+    { echo '<?php class JConfig {'; echo '  public $live_site = '"''"';'; echo '}'; } > "$cwd/configuration.php"
     [ -e "$dir/fail-joomla" ] && exit 1
     [ -e "$dir/keep-installation" ] || rm -rf "$cwd/installation"
     ;;
@@ -2937,6 +2959,12 @@ exit 0
         assert_eq!(
             fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o640
+        );
+        // The pool rewrites `Host`: the public address is pinned.
+        assert!(
+            fs::read_to_string(&config)
+                .unwrap()
+                .contains("public $live_site = 'https://")
         );
         let meta = fs::metadata(f.site.join("public/administrator/manifests")).unwrap();
         assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));
