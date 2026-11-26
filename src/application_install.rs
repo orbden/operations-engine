@@ -1437,8 +1437,8 @@ fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<St
 }
 
 /// Drupal: `settings.php` is made from `default.settings.php` with the site's
-/// domain as the only trusted host and `files/` exists for the site's UID
-/// (and the runtime pool's loopback hop as a trusted reverse proxy) before
+/// domain as the only trusted host and the runtime pool's loopback hop as the
+/// only trusted reverse proxy, and `files/` exists for the site's UID, before
 /// `drush site:install` runs; the installer adds `$databases` and
 /// `hash_salt` to it. The database URL and the administrator's password reach
 /// Drush only through the environment. Afterwards `settings.php` and
@@ -1474,6 +1474,11 @@ fn setup_drupal(
         "$settings['reverse_proxy_trusted_headers'] = ",
         "\\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_FOR | ",
         "\\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_HOST;\n",
+        // Drupal checks `trusted_host_patterns` before its reverse-proxy
+        // middleware registers the proxy, so the check would see
+        // `127.0.0.1`: the proxy is registered here, before that check.
+        "\\Symfony\\Component\\HttpFoundation\\Request::setTrustedProxies(",
+        "$settings['reverse_proxy_addresses'], $settings['reverse_proxy_trusted_headers']);\n",
     ));
     root.write_atomic(&settings, text.as_bytes())
         .map_err(Error::Io)?;
@@ -3266,7 +3271,7 @@ exit 0
             // on loopback, with the site's host in `X-Forwarded-Host` only.
             assert!(
                 settings.contains(
-                    "$settings['reverse_proxy'] = TRUE;\n$settings['reverse_proxy_addresses'] = ['127.0.0.1'];\n$settings['reverse_proxy_trusted_headers'] = \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_FOR | \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_HOST;\n"
+                    "$settings['reverse_proxy'] = TRUE;\n$settings['reverse_proxy_addresses'] = ['127.0.0.1'];\n$settings['reverse_proxy_trusted_headers'] = \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_FOR | \\Symfony\\Component\\HttpFoundation\\Request::HEADER_X_FORWARDED_HOST;\n\\Symfony\\Component\\HttpFoundation\\Request::setTrustedProxies($settings['reverse_proxy_addresses'], $settings['reverse_proxy_trusted_headers']);\n"
                 ),
                 "{settings}"
             );
