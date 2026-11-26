@@ -1444,11 +1444,18 @@ fn finish_joomla(
     // `$behind_loadbalancer` makes Joomla build its URLs and redirects from
     // them (`$live_site` does not: it breaks the front page redirect).
     let text = root.read_to_string(&config).map_err(Error::Io)?;
+    let on = "public $behind_loadbalancer = true;";
     let off = "public $behind_loadbalancer = false;";
-    if !text.contains(off) {
-        return Err(Error::Unverified);
-    }
-    let text = text.replacen(off, "public $behind_loadbalancer = true;", 1);
+    let text = if text.contains(off) {
+        text.replacen(off, on, 1)
+    } else if text.contains(on) {
+        text
+    } else {
+        // The CLI installer does not write the property: add it to the
+        // class, which ends at the file's last `}`.
+        let end = text.rfind('}').ok_or(Error::Unverified)?;
+        format!("{}    {on}\n{}", &text[..end], &text[end..])
+    };
     root.write_atomic(&config, text.as_bytes())
         .map_err(Error::Io)?;
     root.chown(&config, req.uid, req.gid).map_err(Error::Io)?;
@@ -1948,7 +1955,7 @@ case "$*" in
     echo "$JOOMLA_ADMIN_PASSWORD|$JOOMLA_DB_PASSWORD" >> "$dir/joomla-secrets.log"
     echo "$cwd" >> "$dir/joomla-cwd.log"
     # Joomla writes its configuration before it can fail.
-    { echo '<?php class JConfig {'; echo '  public $behind_loadbalancer = false;'; echo '}'; } > "$cwd/configuration.php"
+    { echo '<?php class JConfig {'; echo '  public $live_site = '"''"';'; echo '}'; } > "$cwd/configuration.php"
     [ -e "$dir/fail-joomla" ] && exit 1
     [ -e "$dir/keep-installation" ] || rm -rf "$cwd/installation"
     ;;
