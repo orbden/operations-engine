@@ -617,8 +617,7 @@ fn run_install(
         }
         Application::Craft => setup_craft(ctx, req, root, root_str, cancel)?,
         Application::Typo3 => setup_typo3(ctx, req, root_str, cancel)?,
-        // The Laravel setup arrives with its own change.
-        Application::Laravel => return Err(Error::Unverified),
+        Application::Laravel => setup_laravel(ctx, req, root, root_str, cancel)?,
     };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
@@ -734,19 +733,66 @@ fn setup_craft(
     if process::error_code(&keys.termination).is_some() {
         return Ok(keys);
     }
+    let (email, password) = req.admin()?;
     exec(
         ctx,
         req,
         root_str,
         &[],
-        &[(CRAFT_PASSWORD_ENV, req.admin()?.1)],
+        &[(CRAFT_PASSWORD_ENV, password)],
         &[
             "sh",
             "-c",
             CRAFT_INSTALL_SCRIPT,
             "sh",
-            req.admin()?.0,
+            email,
             req.domain.as_str(),
+        ],
+        SETUP_TIMEOUT,
+        cancel,
+    )
+}
+
+/// Laravel: the database and the site's address go into `.env` (the password
+/// only there, never in an argument), then `key:generate` sets `APP_KEY`.
+fn setup_laravel(
+    ctx: &Context<'_>,
+    req: &Request,
+    root: &ManagedRoot,
+    root_str: &str,
+    cancel: &CancellationToken,
+) -> Result<ProcessOutput, Error> {
+    let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let connection = match db.driver {
+        DatabaseDriver::Mariadb => "mariadb",
+        DatabaseDriver::Postgres => "pgsql",
+    };
+    let port = db.port.to_string();
+    set_env_file(
+        root,
+        req,
+        &[
+            ("APP_URL", &format!("https://{}", req.domain.as_str())),
+            ("DB_CONNECTION", connection),
+            ("DB_HOST", db.host.as_str()),
+            ("DB_PORT", &port),
+            ("DB_DATABASE", db.name.as_str()),
+            ("DB_USERNAME", db.user.as_str()),
+            ("DB_PASSWORD", &db.password),
+        ],
+    )?;
+    exec(
+        ctx,
+        req,
+        root_str,
+        &[],
+        &[],
+        &[
+            "php",
+            "artisan",
+            "key:generate",
+            "--force",
+            "--no-interaction",
         ],
         SETUP_TIMEOUT,
         cancel,
@@ -1056,6 +1102,12 @@ case "$*" in
         echo '<?php' > "$cwd/$staging/public/index.php"
         echo '{"packages":[{"name":"typo3/cms-core","version":"v14.0.1"}]}' > "$cwd/$staging/composer.lock"
         ;;
+      laravel/laravel)
+        mkdir -p "$cwd/$staging/public" "$cwd/$staging/app"
+        echo '<?php' > "$cwd/$staging/public/index.php"
+        printf 'APP_NAME=Laravel\nAPP_URL=http://localhost\nDB_CONNECTION=sqlite\n# DB_HOST=127.0.0.1\n' > "$cwd/$staging/.env"
+        echo '{"packages":[{"name":"laravel/framework","version":"v12.1.0"}]}' > "$cwd/$staging/composer.lock"
+        ;;
       *) exit 3 ;;
     esac
     ;;
@@ -1063,6 +1115,9 @@ case "$*" in
     [ -e "$dir/fail-user" ] && exit 1
     ;;
   *setup/keys*)
+    ;;
+  *key:generate*)
+    [ -e "$dir/fail-key" ] && exit 1
     ;;
   *install/craft*)
     [ -e "$dir/fail-craft" ] && exit 1
@@ -1523,6 +1578,61 @@ exit 0
         ));
         assert_eq!(g.names(""), ["web"]);
         assert_eq!(g.names("web"), [".user.ini"]);
+    }
+
+    fn laravel_plan(f: &Fixture, driver: &str) -> String {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&plan_for(f, "laravel", PASSWORD, Some(database(driver))))
+                .unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("adminEmail");
+        object.remove("adminPassword");
+        value.to_string()
+    }
+
+    #[test]
+    fn laravel_install_writes_env_and_key() {
+        for (driver, connection) in [("mariadb", "mariadb"), ("postgres", "pgsql")] {
+            let f = fixture();
+            let result = f
+                .run_plan(&laravel_plan(&f, driver), REQUEST_ID, None)
+                .unwrap();
+            assert_eq!(result.application, "laravel");
+            assert_eq!(result.version, "12.1.0");
+            assert_eq!(result.admin_url, "https://example.com/");
+            let env = fs::read_to_string(f.site.join(".env")).unwrap();
+            for line in [
+                "APP_URL=https://example.com".to_owned(),
+                format!("DB_CONNECTION={connection}"),
+                "DB_HOST=mariadb".to_owned(),
+                "DB_PORT=3306".to_owned(),
+                "DB_DATABASE=site_db".to_owned(),
+                "DB_USERNAME=site_user".to_owned(),
+                format!("DB_PASSWORD={DB_PASSWORD}"),
+            ] {
+                assert!(env.lines().any(|l| l == line), "{line}\n{env}");
+            }
+            let calls = f.calls();
+            assert!(calls.contains("laravel/laravel"), "{calls}");
+            assert!(
+                calls.contains("php artisan key:generate --force --no-interaction"),
+                "{calls}"
+            );
+            assert!(!calls.contains(DB_PASSWORD), "{calls}");
+            assert_eq!(f.names("public"), [".user.ini", "index.php"]);
+        }
+    }
+
+    #[test]
+    fn laravel_install_failure_leaves_the_site_empty() {
+        let f = fixture();
+        fs::write(f.dir.path().join("fail-key"), "").unwrap();
+        assert!(matches!(
+            f.run_plan(&laravel_plan(&f, "mariadb"), REQUEST_ID, None),
+            Err(Error::SetupFailed(_))
+        ));
+        assert_eq!(f.names(""), ["public"]);
+        assert_eq!(f.names("public"), [".user.ini"]);
     }
 
     fn laravel_json(admin: bool, db: bool) -> String {
