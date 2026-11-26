@@ -83,6 +83,7 @@ pub mod permissions;
 pub mod pg_drop;
 pub mod pg_provision;
 pub mod pg_user;
+pub mod pinned_download;
 pub mod process;
 pub mod protocol;
 #[cfg(unix)]

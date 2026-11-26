@@ -35,6 +35,8 @@ pub enum Error {
     Timeout,
     Request(ureq::Error),
     Read(ureq::Error),
+    /// A response other than `200 OK` where no redirect is followed.
+    Status(u16),
 }
 
 pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, Error> {
@@ -68,6 +70,35 @@ pub fn fetch_bytes_bounded(url: &str, max_bytes: u64, timeout: Duration) -> Resu
         .limit(max_bytes)
         .read_to_vec()
         .map_err(|error| classify(error, Error::Read))
+}
+
+/// Like `fetch_bytes_bounded`, as a stream (for a pinned artifact too large
+/// to hold in memory) and without following any redirect: anything but
+/// `200 OK` is `Status`. Reading past `max_bytes` fails with an I/O error.
+pub fn fetch_reader_bounded(
+    url: &str,
+    max_bytes: u64,
+    timeout: Duration,
+) -> Result<Box<dyn std::io::Read>, Error> {
+    let response = agent(url)
+        .get(url)
+        .config()
+        .timeout_global(Some(timeout))
+        .timeout_recv_body(Some(timeout))
+        .max_redirects(0)
+        .build()
+        .call()
+        .map_err(|error| classify(error, Error::Request))?;
+    if response.status() != 200 {
+        return Err(Error::Status(response.status().as_u16()));
+    }
+    Ok(Box::new(
+        response
+            .into_body()
+            .into_with_config()
+            .limit(max_bytes)
+            .reader(),
+    ))
 }
 
 fn classify(error: ureq::Error, otherwise: fn(ureq::Error) -> Error) -> Error {

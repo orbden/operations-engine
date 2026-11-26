@@ -55,6 +55,7 @@ with a test instead of making a copy.
 | Set keys in `.env` text (no file access) | `set_env_lines` | `src/util.rs` |
 | Unix time now, civil date to days | `unix_now_secs`, `unix_now_secs_i64`, `days_from_civil` | `src/clock.rs` |
 | DNS name or IPv4 of a network peer | `is_dns_name_or_ipv4` | `src/host_name.rs` |
+| Download a pinned archive: no redirect, size and time limits, SHA-256 checked, 0600 file | `download`, `is_sha256_hex` | `src/pinned_download.rs` |
 | Captured subprocess output as text | `CapturedOutput::text` | `src/process.rs` |
 | Meilisearch backup name rules | `name_first_ok`, `valid_dump_uid` | `src/meilisearch_upgrade/cleanup.rs` |
 | Shell word in a unit-test fake program | `shell_quote` | `src/test_support.rs` |
