@@ -22,6 +22,9 @@
 //!    from, and it is in no result, journal or audit record. The panel
 //!    generates it and shows it once.
 //!
+//! Drupal is `drupal/recommended-project` with Drush required into the
+//! project, then `drush site:install` (see `setup_drupal`).
+//!
 //! Laravel has no administrator and two sources: Composer's project
 //! template, or a one-time shallow clone of a public HTTPS repository
 //! (`clone_repository`). The repository URL check limits the clone URL only,
@@ -109,6 +112,12 @@ const MAX_ADMIN_PASSWORD_BYTES: usize = 256;
 /// the container; fixed text, never built from input.
 const PASSWORD_ENV: &str = "STATAMIC_ADMIN_PASSWORD";
 const CRAFT_PASSWORD_ENV: &str = "CRAFT_ADMIN_PASSWORD";
+/// Drush 13 supports Drupal 10.2 and later, so every Drupal 11.
+const DRUSH_PACKAGE: &str = "drush/drush:^13";
+/// Drush reads a command's options from `DRUSH_COMMAND_<NAME>_OPTIONS_<OPTION>`
+/// (consolidation/config's `EnvConfig`), so neither secret is an argument.
+const DRUPAL_DB_URL_ENV: &str = "DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL";
+const DRUPAL_PASSWORD_ENV: &str = "DRUSH_COMMAND_SITE_INSTALL_OPTIONS_ACCOUNT_PASS";
 /// The administrator every installed application starts with.
 const ADMIN_USER: &str = "admin";
 const MIN_DB_PASSWORD_BYTES: usize = 12;
@@ -146,6 +155,7 @@ enum Application {
     Laravel,
     Joomla,
     Nextcloud,
+    Drupal,
 }
 
 impl Application {
@@ -157,6 +167,7 @@ impl Application {
             Self::Laravel => "laravel",
             Self::Joomla => "joomla",
             Self::Nextcloud => "nextcloud",
+            Self::Drupal => "drupal",
         }
     }
     const fn package(self) -> &'static str {
@@ -170,6 +181,8 @@ impl Application {
             Self::Joomla => "",
             // Not a Composer package: installed from its archive.
             Self::Nextcloud => "",
+            // Drupal 12 is not supported: the major is pinned here.
+            Self::Drupal => "drupal/recommended-project:^11",
         }
     }
     /// The directory the web server serves, below the project root.
@@ -178,7 +191,7 @@ impl Application {
             Self::Statamic | Self::Typo3 | Self::Laravel | Self::Joomla | Self::Nextcloud => {
                 "public"
             }
-            Self::Craft => "web",
+            Self::Craft | Self::Drupal => "web",
         }
     }
     const fn admin_path(self) -> &'static str {
@@ -189,6 +202,7 @@ impl Application {
             Self::Laravel => "/",
             Self::Joomla => "/administrator",
             Self::Nextcloud => "/login",
+            Self::Drupal => "/user/login",
         }
     }
     /// The Composer package whose locked version is the application's.
@@ -202,6 +216,7 @@ impl Application {
             Self::Joomla => "",
             // Read from `version.php` instead (`nextcloud::version`).
             Self::Nextcloud => "",
+            Self::Drupal => "drupal/core",
         }
     }
     /// Whether the application needs a database the panel provisioned.
@@ -846,6 +861,24 @@ fn run_install(
         )?,
         Source::Git { url } => clone_repository(ctx, req, root, root_str, staging, url, cancel)?,
     }
+    if req.application == Application::Drupal {
+        // Drush is the project's own dependency, not a global tool.
+        composer(
+            ctx,
+            req,
+            &format!("{root_str}/{staging}"),
+            &[
+                "php",
+                CONTAINER_COMPOSER,
+                "require",
+                DRUSH_PACKAGE,
+                "--no-interaction",
+                "--no-ansi",
+                "--no-progress",
+            ],
+            cancel,
+        )?;
+    }
 
     move_into_place(root, staging, docroot)?;
     let output = match req.application {
@@ -882,6 +915,7 @@ fn run_install(
             data.ok_or(Error::Unverified)?,
             cancel,
         )?,
+        Application::Drupal => setup_drupal(ctx, req, root, root_str, cancel)?,
     };
     if let Some(code) = process::error_code(&output.termination) {
         return Err(Error::SetupFailed(code));
@@ -1402,6 +1436,90 @@ fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<St
         .map_err(|_| Error::Unverified)
 }
 
+/// Drupal: `settings.php` is made from `default.settings.php` with the site's
+/// domain as the only trusted host and `files/` exists for the site's UID
+/// before `drush site:install` runs; the installer adds `$databases` and
+/// `hash_salt` to it. The database URL and the administrator's password reach
+/// Drush only through the environment. Afterwards `settings.php` and
+/// `sites/default` are read-only, as Drupal's status report requires.
+fn setup_drupal(
+    ctx: &Context<'_>,
+    req: &Request,
+    root: &ManagedRoot,
+    root_str: &str,
+    cancel: &CancellationToken,
+) -> Result<ProcessOutput, Error> {
+    let db = req.database.as_ref().ok_or(Error::Unverified)?;
+    let (email, password) = req.admin()?;
+    let default = "web/sites/default";
+    let settings = rel(format!("{default}/settings.php"))?;
+    let mut text = root
+        .read_to_string(&rel(format!("{default}/default.settings.php"))?)
+        .map_err(Error::Io)?;
+    // A `Domain` is lowercase letters, digits, `-` and `.`: only the dot is
+    // special in a pattern.
+    text.push_str(&format!(
+        "\n$settings['trusted_host_patterns'] = ['^{}$'];\n",
+        req.domain.as_str().replace('.', "\\.")
+    ));
+    root.write_atomic(&settings, text.as_bytes())
+        .map_err(Error::Io)?;
+    root.chown(&settings, req.uid, req.gid).map_err(Error::Io)?;
+    root.set_mode(&settings, 0o640).map_err(Error::Io)?;
+    let files = rel(format!("{default}/files"))?;
+    root.create_dir_all(&files).map_err(Error::Io)?;
+    root.chown(&files, req.uid, req.gid).map_err(Error::Io)?;
+    root.set_mode(&files, 0o755).map_err(Error::Io)?;
+
+    let scheme = match db.driver {
+        DatabaseDriver::Mariadb => "mysql",
+        DatabaseDriver::Postgres => "pgsql",
+    };
+    // The password is `[A-Za-z0-9._-]` (`Database::parse`): nothing in it
+    // needs URL encoding.
+    let db_url = format!(
+        "{scheme}://{}:{}@{}:{}/{}",
+        db.user.as_str(),
+        db.password,
+        db.host.as_str(),
+        db.port,
+        db.name.as_str()
+    );
+    let uri = format!("DRUSH_OPTIONS_URI=https://{}", req.domain.as_str());
+    let mail = format!("--account-mail={email}");
+    let site_mail = format!("--site-mail={email}");
+    let site_name = format!("--site-name={}", req.domain.as_str());
+    let account = format!("--account-name={ADMIN_USER}");
+    let output = exec(
+        ctx,
+        req,
+        root_str,
+        &[&uri],
+        &[
+            (DRUPAL_DB_URL_ENV, &db_url),
+            (DRUPAL_PASSWORD_ENV, password),
+        ],
+        &[
+            "php",
+            "vendor/bin/drush",
+            "site:install",
+            "standard",
+            "--yes",
+            &account,
+            &mail,
+            &site_mail,
+            &site_name,
+        ],
+        SETUP_TIMEOUT,
+        cancel,
+    )?;
+    if process::error_code(&output.termination).is_none() {
+        root.set_mode(&settings, 0o440).map_err(Error::Io)?;
+        root.set_mode(&rel(default)?, 0o555).map_err(Error::Io)?;
+    }
+    Ok(output)
+}
+
 /// TYPO3: `typo3 setup` reads everything from the environment, passwords
 /// included, so nothing secret is in any argument.
 fn setup_typo3(
@@ -1720,6 +1838,12 @@ case "$*" in
         esac
         echo '{"packages":[{"name":"laravel/framework","version":"v12.1.0"}]}' > "$cwd/$staging/composer.lock"
         ;;
+      drupal/recommended-project:^11)
+        mkdir -p "$cwd/$staging/web/sites/default" "$cwd/$staging/web/core"
+        echo '<?php' > "$cwd/$staging/web/index.php"
+        printf '<?php\n// default settings\n' > "$cwd/$staging/web/sites/default/default.settings.php"
+        echo '{"packages":[{"name":"drupal/core","version":"11.2.8"}]}' > "$cwd/$staging/composer.lock"
+        ;;
       *) exit 3 ;;
     esac
     ;;
@@ -1743,6 +1867,18 @@ case "$*" in
     ;;
   *storage:link*)
     [ -e "$dir/fail-link" ] && exit 1
+    ;;
+  *composer.phar\ require\ drush/drush*)
+    [ -e "$dir/fail-drush" ] && exit 1
+    mkdir -p "$cwd/vendor/bin"
+    echo '<?php' > "$cwd/vendor/bin/drush"
+    ;;
+  *drush\ site:install*)
+    echo "$DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL|$DRUSH_COMMAND_SITE_INSTALL_OPTIONS_ACCOUNT_PASS" >> "$dir/drupal.log"
+    # Drupal writes its settings and files before it can fail.
+    echo '$databases = [];' >> "$cwd/web/sites/default/settings.php"
+    mkdir -p "$cwd/web/sites/default/files/config_x/sync"
+    [ -e "$dir/fail-drupal" ] && exit 1
     ;;
   *install/craft*)
     [ -e "$dir/fail-craft" ] && exit 1
@@ -3026,4 +3162,144 @@ exit 0
         assert!(Application::Statamic.archive_hosts().is_empty());
     }
     mod nextcloud_install;
+    fn drupal_plan(f: &Fixture, driver: &str) -> String {
+        plan_for(f, "drupal", PASSWORD, Some(database(driver)))
+    }
+
+    /// Lets the temporary directory be removed after a successful install
+    /// made `sites/default` read-only.
+    fn unlock_drupal(f: &Fixture) {
+        let _ = fs::set_permissions(
+            f.site.join("web/sites/default"),
+            fs::Permissions::from_mode(0o755),
+        );
+    }
+
+    #[test]
+    fn drupal_application_values() {
+        let app = Application::Drupal;
+        assert_eq!(app.name(), "drupal");
+        assert_eq!(app.package(), "drupal/recommended-project:^11");
+        assert_eq!(app.docroot(), "web");
+        assert_eq!(app.admin_path(), "/user/login");
+        assert_eq!(app.version_package(), "drupal/core");
+        assert!(app.needs_database() && app.has_admin());
+    }
+
+    #[test]
+    fn drupal_requires_an_administrator_and_a_database() {
+        let f = fixture_for("web");
+        let parse = |json: &str| Request::parse(json, REQUEST_ID, None).is_ok();
+        assert!(parse(&drupal_plan(&f, "mariadb")));
+        assert!(parse(&drupal_plan(&f, "postgres")));
+        assert!(!parse(&plan_for(&f, "drupal", PASSWORD, None)));
+        let mut value: serde_json::Value =
+            serde_json::from_str(&drupal_plan(&f, "mariadb")).unwrap();
+        value.as_object_mut().unwrap().remove("adminPassword");
+        assert!(!parse(&value.to_string()));
+        let mut value: serde_json::Value =
+            serde_json::from_str(&drupal_plan(&f, "mariadb")).unwrap();
+        value.as_object_mut().unwrap().remove("adminEmail");
+        assert!(!parse(&value.to_string()));
+        // Only Laravel has a repository source.
+        let mut value: serde_json::Value =
+            serde_json::from_str(&drupal_plan(&f, "mariadb")).unwrap();
+        value["source"] = serde_json::json!({"kind": "git", "url": GIT_URL});
+        assert!(!parse(&value.to_string()));
+    }
+
+    #[test]
+    fn drupal_installs_with_secrets_only_in_the_environment() {
+        for (driver, scheme) in [("mariadb", "mysql"), ("postgres", "pgsql")] {
+            let f = fixture_for("web");
+            let result = f
+                .run_plan(&drupal_plan(&f, driver), REQUEST_ID, None)
+                .unwrap();
+            assert_eq!(result.application, "drupal");
+            assert_eq!(result.version, "11.2.8");
+            assert_eq!(result.admin_url, "https://example.com/user/login");
+            let calls = f.calls();
+            for part in [
+                "drupal/recommended-project:^11",
+                "-e DRUSH_OPTIONS_URI=https://example.com",
+                "-e DRUSH_COMMAND_SITE_INSTALL_OPTIONS_DB_URL",
+                "-e DRUSH_COMMAND_SITE_INSTALL_OPTIONS_ACCOUNT_PASS",
+                "php vendor/bin/drush site:install standard --yes --account-name=admin --account-mail=admin@example.com --site-mail=admin@example.com --site-name=example.com",
+            ] {
+                assert!(calls.contains(part), "{part}\n{calls}");
+            }
+            assert!(!calls.contains(PASSWORD), "{calls}");
+            assert!(!calls.contains(DB_PASSWORD), "{calls}");
+            let secrets = fs::read_to_string(f.dir.path().join("drupal.log")).unwrap();
+            assert_eq!(
+                secrets.trim(),
+                format!("{scheme}://site_user:{DB_PASSWORD}@mariadb:3306/site_db|{PASSWORD}"),
+            );
+            assert!(!serde_json::to_string(&result).unwrap().contains(PASSWORD));
+
+            // Drupal's own settings file: the default one, the site's host as
+            // the only trusted one, what the installer added, read-only.
+            let default = f.site.join("web/sites/default");
+            let settings = fs::read_to_string(default.join("settings.php")).unwrap();
+            assert!(
+                settings.starts_with("<?php\n// default settings\n"),
+                "{settings}"
+            );
+            assert!(
+                settings.contains("$settings['trusted_host_patterns'] = ['^example\\.com$'];\n"),
+                "{settings}"
+            );
+            assert!(settings.contains("$databases = [];"), "{settings}");
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&default.join("settings.php")), 0o440);
+            assert_eq!(mode(&default), 0o555);
+            assert!(default.join("files").is_dir());
+            let meta = fs::metadata(default.join("settings.php")).unwrap();
+            assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));
+            assert_eq!(f.names("web"), [".user.ini", "core", "index.php", "sites"]);
+            unlock_drupal(&f);
+        }
+    }
+
+    #[test]
+    fn drupal_installs_drush_from_the_project_before_moving_it() {
+        let f = fixture_for("web");
+        f.run_plan(&drupal_plan(&f, "mariadb"), REQUEST_ID, None)
+            .unwrap();
+        let calls = f.calls();
+        let require = calls
+            .lines()
+            .position(|l| l.contains("composer.phar require drush/drush:^13"))
+            .expect(&calls);
+        let install = calls
+            .lines()
+            .position(|l| l.contains("drush site:install"))
+            .expect(&calls);
+        assert!(require < install, "{calls}");
+        // Composer ran in the staging directory, as the site's UID.
+        let line = calls.lines().nth(require).unwrap();
+        assert!(
+            line.contains("/.wcp-install-") && line.contains("--user"),
+            "{line}"
+        );
+        assert!(f.site.join("vendor/bin/drush").is_file());
+        unlock_drupal(&f);
+    }
+
+    #[test]
+    fn a_failed_drupal_install_leaves_the_site_empty() {
+        for marker in ["fail-drush", "fail-drupal"] {
+            let f = fixture_for("web");
+            fs::write(f.dir.path().join(marker), "").unwrap();
+            let error = f
+                .run_plan(&drupal_plan(&f, "mariadb"), REQUEST_ID, None)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::ComposerFailed(_) | Error::SetupFailed(_)),
+                "{marker}: {error:?}"
+            );
+            assert_eq!(f.names(""), ["web"], "{marker}");
+            assert_eq!(f.names("web"), [".user.ini"], "{marker}");
+        }
+    }
 }
