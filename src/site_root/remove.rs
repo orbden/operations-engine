@@ -11,6 +11,10 @@ pub struct RemoveRequest {
     pub site_id: Option<SiteId>,
     /// The caller confirms that deleting a non-empty directory is intended.
     pub confirm_contents: bool,
+    /// Also remove `<content root>/<domain>-data`, the data directory some
+    /// applications (Nextcloud) keep beside the site directory. Same checks
+    /// as the site directory; absent is a success.
+    pub data_dir: bool,
     pub(crate) expected_owner: Option<(u32, u32)>,
     pub request_id: RequestId,
     pub idempotency_key: Option<IdempotencyKey>,
@@ -37,6 +41,7 @@ impl RemoveRequest {
             relative_root,
             site_id,
             confirm_contents,
+            data_dir: false,
             expected_owner: None,
             request_id,
             idempotency_key,
@@ -88,7 +93,12 @@ pub fn remove_root(
     manifest_owner_uid: u32,
     req: &RemoveRequest,
 ) -> Result<RemoveResult, Error> {
-    let (content_root, lock_paths) = locate(content_roots, &req.domain, req.site_id.as_ref())?;
+    let (content_root, lock_paths) = locate(
+        content_roots,
+        &req.domain,
+        req.site_id.as_ref(),
+        req.data_dir,
+    )?;
     let lock_refs: Vec<&Path> = lock_paths.iter().map(PathBuf::as_path).collect();
     transact(
         engine_state,
@@ -106,8 +116,12 @@ pub(super) fn locate<'a>(
     content_roots: &'a [TrustedRoot],
     domain: &Domain,
     site_id: Option<&SiteId>,
+    data_dir: bool,
 ) -> Result<(&'a TrustedRoot, Vec<PathBuf>), Error> {
     let mut names = vec![PathBuf::from(domain.as_str())];
+    if data_dir {
+        names.push(PathBuf::from(data_dir_name(domain)));
+    }
     if let Some(id) = site_id {
         names.push(Path::new(RELEASE_TREES_DIR).join(id.to_string()));
     }
@@ -132,6 +146,7 @@ pub(super) fn remove(
         &req.domain,
         &req.relative_root,
         req.site_id.as_ref(),
+        req.data_dir,
     )?;
     if let Some((uid, gid)) = req.expected_owner {
         for target in &targets {
@@ -176,6 +191,12 @@ pub(super) fn remove(
     })
 }
 
+/// `<domain>-data`: the directory beside the site directory that holds an
+/// application's data (see `application_install::nextcloud`).
+fn data_dir_name(domain: &Domain) -> String {
+    format!("{}-data", domain.as_str())
+}
+
 /// The directories a request acts on, each already checked: the site
 /// directory and (with a site id, only when the engine manifest names this
 /// domain) the release tree. Missing directories are skipped.
@@ -186,6 +207,7 @@ pub(super) fn resolve_targets(
     domain: &Domain,
     relative_root: &[SiteRelativePath],
     site_id: Option<&SiteId>,
+    data_dir: bool,
 ) -> Result<Vec<Target>, Error> {
     refuse_system_dir(content_root)?;
     let mut targets = Vec::new();
@@ -199,6 +221,15 @@ pub(super) fn resolve_targets(
     let base = ManagedRoot::open(content_root).map_err(Error::Io)?;
     if let Some(target) = open_target(base, names, path, !relative_root.is_empty())? {
         targets.push(target);
+    }
+
+    if data_dir {
+        let name = data_dir_name(domain);
+        let path = content_root.as_path().join(&name);
+        let base = ManagedRoot::open(content_root).map_err(Error::Io)?;
+        if let Some(target) = open_target(base, vec![rel(&name)], path, false)? {
+            targets.push(target);
+        }
     }
 
     if let Some(id) = site_id {

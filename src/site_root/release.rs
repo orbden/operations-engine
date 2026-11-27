@@ -54,7 +54,8 @@ pub fn release_root(
     manifest_owner_uid: u32,
     req: &ReleaseRequest,
 ) -> Result<ReleaseResult, Error> {
-    let (content_root, lock_paths) = locate(content_roots, &req.domain, req.site_id.as_ref())?;
+    let (content_root, lock_paths) =
+        locate(content_roots, &req.domain, req.site_id.as_ref(), false)?;
     let lock_refs: Vec<&Path> = lock_paths.iter().map(PathBuf::as_path).collect();
     transact(
         engine_state,
@@ -70,6 +71,7 @@ pub fn release_root(
                 &req.domain,
                 &[],
                 req.site_id.as_ref(),
+                false,
             )?;
             let mut released = Vec::new();
             let mut repaired_entries = 0;

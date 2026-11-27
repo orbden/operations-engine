@@ -158,6 +158,7 @@ fn installs_into_public_with_a_private_data_directory_beside_the_site() {
         "config:system:set trusted_domains 1 --value=example.com",
         "config:system:set overwrite.cli.url --value=https://example.com",
         "config:system:set overwriteprotocol --value=https",
+        "config:system:set trusted_proxies 0 --value=127.0.0.1",
         "status --output=json",
     ] {
         assert!(calls.contains(line), "{line}: {calls}");

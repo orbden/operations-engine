@@ -208,6 +208,11 @@ pub enum SiteCommand {
         /// (`true`/`false`).
         #[arg(long = "confirm-contents", action = clap::ArgAction::Set)]
         confirm_contents: bool,
+        /// Also remove `<content root>/<domain>-data`, the data directory
+        /// Nextcloud keeps beside the site directory (`true`/`false`,
+        /// default `false`).
+        #[arg(long = "with-data-dir", action = clap::ArgAction::Set, default_value_t = false)]
+        with_data_dir: bool,
         #[arg(long = "request-id")]
         request_id: String,
         #[arg(long = "idempotency-key")]

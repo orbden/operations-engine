@@ -156,6 +156,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             relative_root,
             site_id,
             confirm_contents,
+            with_data_dir,
             request_id,
             idempotency_key,
         } => remove_root(
@@ -163,6 +164,7 @@ pub fn run(command: SiteCommand) -> Result<Response, ResponseBuildError> {
             relative_root.as_deref(),
             site_id.as_deref(),
             confirm_contents,
+            with_data_dir,
             &request_id,
             idempotency_key.as_deref(),
         ),
@@ -999,6 +1001,7 @@ fn remove_root(
     relative_root: Option<&str>,
     site_id: Option<&str>,
     confirm_contents: bool,
+    with_data_dir: bool,
     request_id: &str,
     idempotency_key: Option<&str>,
 ) -> Result<Response, ResponseBuildError> {
@@ -1012,7 +1015,10 @@ fn remove_root(
         request_id,
         idempotency_key,
     ) {
-        Ok(request) => request,
+        Ok(mut request) => {
+            request.data_dir = with_data_dir;
+            request
+        }
         Err(error) => {
             return Ok(Response::failure(
                 REMOVE_OPERATION,
