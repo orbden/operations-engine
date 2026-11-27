@@ -50,6 +50,9 @@ its authoritative operation list. The current source includes:
   installs with a warning in the result; far above that (200000 files or
   2 GiB) it is refused, as is one that carries its own `public/.user.ini`. A
   committed `public/storage` is removed (with a warning), so `storage:link` works.
+- `runtime.setPatchWindow` / `runtime.runPatchWindow`: an off-by-default daily
+  window that applies only the images the owner approved, with the manual
+  patch sequence's health wait and restore, and blocks an image that failed.
 - Node applications: `node.build` (npm build in a throw-away, digest-pinned
   container), `node.deployApp`, `node.appStatus`, `node.restartApp` and
   `node.removeApp` (one container per application).

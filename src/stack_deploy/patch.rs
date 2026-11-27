@@ -145,6 +145,29 @@ fn site_name_ok(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
 }
 
+/// The checks a patch target must pass, shared by a manual request and the
+/// window's stored approval.
+pub fn validate_target(
+    service: &str,
+    image: &str,
+    resolved_version: &str,
+    sites: &[String],
+) -> Result<(), RequestError> {
+    if !service_name_ok(service) {
+        return Err(RequestError::InvalidService);
+    }
+    if !image_allowed(image) {
+        return Err(RequestError::InvalidImage);
+    }
+    if resolved_version.len() > 32 || status::parse_version(resolved_version).is_none() {
+        return Err(RequestError::InvalidVersion);
+    }
+    if sites.len() > MAX_SITES || !sites.iter().all(|s| site_name_ok(s)) {
+        return Err(RequestError::InvalidSites);
+    }
+    Ok(())
+}
+
 impl Request {
     pub fn parse(
         json: &str,
@@ -158,20 +181,12 @@ impl Request {
             .transpose()
             .map_err(|_| RequestError::InvalidIdempotencyKey)?;
         let wire: Wire = serde_json::from_str(json).map_err(|_| RequestError::Malformed)?;
-        if !service_name_ok(&wire.service) {
-            return Err(RequestError::InvalidService);
-        }
-        if !image_allowed(&wire.image) {
-            return Err(RequestError::InvalidImage);
-        }
-        if wire.resolved_version.len() > 32
-            || status::parse_version(&wire.resolved_version).is_none()
-        {
-            return Err(RequestError::InvalidVersion);
-        }
-        if wire.sites.len() > MAX_SITES || !wire.sites.iter().all(|s| site_name_ok(s)) {
-            return Err(RequestError::InvalidSites);
-        }
+        validate_target(
+            &wire.service,
+            &wire.image,
+            &wire.resolved_version,
+            &wire.sites,
+        )?;
         if wire.confirm != format!("RESTART {}", wire.service) {
             return Err(RequestError::ConfirmationMissing);
         }
@@ -232,6 +247,28 @@ impl Request {
             request_id,
             idempotency_key,
             rule: Some(rule.clone()),
+        })
+    }
+
+    /// A patch the service patch window applies on its own: the caller (the
+    /// window's stored approval) has already confirmed the restart, so no
+    /// phrase is needed; every other check is `execute`'s, unchanged.
+    pub fn for_window(
+        service: &str,
+        image: &str,
+        resolved_version: &str,
+        sites: &[String],
+    ) -> Result<Self, RequestError> {
+        validate_target(service, image, resolved_version, sites)?;
+        Ok(Self {
+            service: service.to_owned(),
+            image: image.to_owned(),
+            resolved_version: resolved_version.to_owned(),
+            sites: sites.to_vec(),
+            request_id: RequestId::parse(&uuid::Uuid::new_v4().to_string())
+                .map_err(|_| RequestError::InvalidRequestId)?,
+            idempotency_key: None,
+            rule: None,
         })
     }
 

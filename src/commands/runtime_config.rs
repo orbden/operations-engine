@@ -32,6 +32,12 @@ pub fn run(command: RuntimeCommand) -> Result<Response, ResponseBuildError> {
             request_id,
             idempotency_key,
         } => patch_update(&request_file, &request_id, idempotency_key.as_deref()),
+        RuntimeCommand::SetPatchWindow {
+            request_file,
+            request_id,
+        } => set_patch_window(&request_file, &request_id),
+        RuntimeCommand::RunPatchWindow { request_id } => run_patch_window(&request_id),
+        RuntimeCommand::PatchWindowStatus => patch_window_status(),
         RuntimeCommand::ActivateConfig {
             runtime_id,
             domain,
@@ -576,5 +582,183 @@ fn reconcile_request_error_message(error: RuntimeReconcileRequestError) -> &'sta
         }
         RuntimeReconcileRequestError::InvalidRequestId => "request-id is not a canonical UUID",
         RuntimeReconcileRequestError::InvalidIdempotencyKey => "idempotency-key is invalid",
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// `runtime.setPatchWindow`: stores the owner's approval and installs or
+/// removes the daily timer. A timer that cannot be installed (no systemd as
+/// init) is reported, never hidden: the window is then stored but does not run
+/// by itself.
+fn set_patch_window(
+    path: &std::path::Path,
+    request_id: &str,
+) -> Result<Response, ResponseBuildError> {
+    use crate::service_patch_window as window;
+    #[cfg(unix)]
+    {
+        if RequestId::parse(request_id).is_err() {
+            return Ok(Response::failure(
+                window::SET_OPERATION,
+                ErrorCode::InvalidInput,
+                "request-id is not a canonical UUID",
+            ));
+        }
+        let Ok(json) = crate::commands::read_root_owned_content_file(path) else {
+            return Ok(Response::failure(
+                window::SET_OPERATION,
+                ErrorCode::InvalidInput,
+                "request-file must be a root-owned regular file",
+            ));
+        };
+        let request = match window::SetRequest::parse(&json) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(Response::failure(
+                    window::SET_OPERATION,
+                    ErrorCode::InvalidInput,
+                    &error.message(),
+                ));
+            }
+        };
+        let config = std::path::Path::new(window::CONFIG_PATH);
+        let stored = (|| {
+            if let Some(dir) = config.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let previous = window::load(config)?;
+            let next = window::after_set(previous, &request, now_secs());
+            window::store(config, &next)?;
+            Ok::<_, std::io::Error>(next)
+        })();
+        let Ok(next) = stored else {
+            return Ok(Response::failure(
+                window::SET_OPERATION,
+                ErrorCode::Internal,
+                "the patch window could not be stored",
+            ));
+        };
+        let timer = window::sync_timer(
+            &next,
+            std::path::Path::new(crate::security_timer::UNIT_DIR),
+            std::path::Path::new(crate::security_timer::RUN_DIR),
+            "systemctl",
+        );
+        Response::success(
+            window::SET_OPERATION,
+            serde_json::json!({
+                "enabled": next.enabled,
+                "hour": next.hour,
+                "minute": next.minute,
+                "targets": next.targets.len(),
+                "timer": timer.name(),
+            }),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, request_id);
+        Ok(Response::failure(
+            window::SET_OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "the patch window requires a Linux host",
+        ))
+    }
+}
+
+/// `runtime.runPatchWindow`: the daily run. Every approved image goes through
+/// the same patch sequence as a manual update, one service at a time.
+fn run_patch_window(request_id: &str) -> Result<Response, ResponseBuildError> {
+    use crate::{
+        config::EngineConfig,
+        filesystem::ManagedRoot,
+        service_patch_window as window,
+        stack_deploy::{Context, Timing, patch},
+    };
+    if RequestId::parse(request_id).is_err() {
+        return Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::InvalidInput,
+            "request-id is not a canonical UUID",
+        ));
+    }
+    if !cfg!(target_os = "linux") {
+        return Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::UnsupportedPlatform,
+            "the patch window requires a Linux host",
+        ));
+    }
+    let Ok(config) = EngineConfig::load_root_owned(std::path::Path::new(CONFIG_PATH)) else {
+        return Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::Internal,
+            crate::commands::CONFIG_UNAVAILABLE_MESSAGE,
+        ));
+    };
+    let Ok(engine_state) = ManagedRoot::open(&config.state_root) else {
+        return Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::Internal,
+            "engine state root is unavailable",
+        ));
+    };
+    let Some((stack_root, owner)) = crate::commands::stack::prepare_stack_root() else {
+        return Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::Internal,
+            "stack directory is unavailable",
+        ));
+    };
+    let context = Context {
+        engine_state: &engine_state,
+        stack_root: &stack_root,
+        docker: "docker",
+        timing: Timing::PRODUCTION,
+        owner,
+    };
+    let cancel = CancellationToken::default();
+    match window::run(
+        std::path::Path::new(window::CONFIG_PATH),
+        now_secs(),
+        &mut |request| patch::execute(&context, request, &cancel),
+    ) {
+        Ok(last) => Response::success(window::RUN_OPERATION, last),
+        Err(window::RunError::NotEnabled) => Response::success(
+            window::RUN_OPERATION,
+            serde_json::json!({ "atUnixSecs": now_secs(), "results": [] }),
+        ),
+        Err(window::RunError::Io(_)) => Ok(Response::failure(
+            window::RUN_OPERATION,
+            ErrorCode::Internal,
+            "the patch window could not be read or recorded",
+        )),
+    }
+}
+
+/// `runtime.patchWindowStatus`: read-only.
+fn patch_window_status() -> Result<Response, ResponseBuildError> {
+    use crate::service_patch_window as window;
+    match window::load(std::path::Path::new(window::CONFIG_PATH)) {
+        Ok(stored) => Response::success(
+            window::STATUS_OPERATION,
+            serde_json::json!({
+                "configured": stored.is_some(),
+                "window": stored,
+                "timerInstalled": window::timer_installed(std::path::Path::new(
+                    crate::security_timer::UNIT_DIR
+                )),
+            }),
+        ),
+        Err(_) => Ok(Response::failure(
+            window::STATUS_OPERATION,
+            ErrorCode::Internal,
+            "the patch window file could not be read",
+        )),
     }
 }

@@ -99,6 +99,7 @@ pub mod security_baseline;
 pub mod security_feed;
 #[cfg(unix)]
 pub mod security_timer;
+pub mod service_patch_window;
 pub mod site;
 pub mod site_admin;
 #[cfg(unix)]

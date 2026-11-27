@@ -1090,6 +1090,42 @@ The engine decides what a patch is. It refuses, without changing anything, unles
 
 Under the shared stack lock and the request's transaction it stages the compose file with only that service's default image replaced, validates it, applies the image policy to every service and pulls that service, writes a journal, backs the live file up as `docker-compose.yml.rollback-<request id>` and moves the staged file in. `docker compose up -d --no-deps <service>` then recreates only that service, which must be running and healthy within the health bound (ingress must also publish `443/tcp`). If it is not, the file is restored and the service is brought up on the previous image again (`CONFIG_RELOAD_FAILED`, previous image restored), or `CONFIG_RECOVERY_FAILED` when that fails too. A journal left by a dead process is rolled back by the next run first. A replay of a finished request returns the recorded result or failure. The result and the journal hold image references, versions and site names only. Linux hosts only.
 
+## `runtime.setPatchWindow`, `runtime.runPatchWindow` and `runtime.patchWindowStatus`
+
+The service patch window moves the managed containers to images the owner
+approved, once a day at a server-local time, without anyone present. It is off
+until switched on and never restarts anything it was not told to.
+
+`runtime set-patch-window --request-file <root-owned file> --request-id <uuid>`
+takes `{"enabled", "hour", "minute", "targets", "confirm"}`. Switching it on
+needs `confirm` to be exactly `AUTOMATIC RESTARTS` (restarting a shared PHP or
+database container interrupts every site on it) and one to twenty `targets`,
+each `{"service", "image", "resolvedVersion", "sites"}` checked like a
+`runtime.patchUpdate` request (a digest-pinned `ghcr.io/orbden/...` image, a
+dotted version, host names), one per service. The engine stores them in the
+root-only file `/etc/wcp/service-patch-window.json` and installs the fixed
+`wcp-service-patch` systemd timer (`OnCalendar=*-*-* HH:MM:00`,
+`Persistent=false`, so a missed run is not made up at a random time). Switching
+it off removes the timer and the approval; a new switch-on clears every block.
+The result is `{enabled, hour, minute, targets, timer}`; `timer` is
+`installed`, `removed` or `unavailable` (systemd is not the running init: the
+window is stored but does not run by itself).
+
+`runtime run-patch-window --request-id <uuid>` is what the timer starts. Each
+approved, unblocked target goes through the `runtime.patchUpdate` sequence one
+service at a time (the engine judges from the running image that it is a
+patch, waits for health, restores the previous image on failure). A target
+that is not a patch (already current, another line) or a stack that is busy
+is `skipped`; a failure is `failed`, restores the previous image and blocks
+that image: the next day does not retry it, and a new confirmation clears the
+block. The result, also kept in the file, is `{atUnixSecs, results:[{service,
+outcome, message?}]}` with `outcome` one of `updated`, `alreadyCurrent`,
+`skipped`, `failed`. Nothing new enters the window by itself: a newer image
+needs a new approval.
+
+`runtime patch-window-status` is read-only: `{configured, window, timerInstalled}`
+with the stored settings, targets, blocked images and the last run.
+
 ## `runtime.patchStatus`
 
 `runtime patch-status --request-file <file>` reports, for every container of the managed stack (compose project `wcp`), the full version it runs and how a caller-named candidate image compares. It is local and read-only: it asks the local Docker daemon and fetches nothing. The root-owned request file is `{"candidates":[{"service","digest","resolvedVersion"}]}` (at most 64, unique `service`, `digest` as `sha256:<64 hex>`, `resolvedVersion` dotted numeric; `digest` and `resolvedVersion` are optional; unknown keys are refused).
