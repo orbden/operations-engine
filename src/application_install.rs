@@ -146,10 +146,14 @@ const MAX_ARCHIVE_URL_BYTES: usize = 512;
 /// A Laravel `.env.example` is about 1 KiB; a repository cannot make the
 /// engine read or copy more than this.
 const MAX_ENV_EXAMPLE_BYTES: u64 = 256 * 1024;
-/// A cloned Laravel project (without `.git` and `vendor/`) this large is not
-/// a project to install: the clone is refused before Composer runs.
-const MAX_CLONE_ENTRIES: usize = 20_000;
-const MAX_CLONE_BYTES: u64 = 256 * 1024 * 1024;
+/// A cloned Laravel project (without `.git` and `vendor/`) above this is large:
+/// the install goes on and says so in its result.
+const WARN_CLONE_ENTRIES: usize = 20_000;
+const WARN_CLONE_BYTES: u64 = 256 * 1024 * 1024;
+/// Above this the clone is refused before Composer runs: that much is the
+/// host's disk and the engine's own walk at stake, not a recommendation.
+const MAX_CLONE_ENTRIES: usize = 200_000;
+const MAX_CLONE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Joomla 6's full package holds about 13 400 entries and 90 MiB.
 const ARCHIVE_LIMITS: Limits = Limits {
     max_entries: 50_000,
@@ -545,6 +549,9 @@ pub struct InstallResult {
     pub version: String,
     pub admin_url: String,
     pub completed_at_unix_secs: u64,
+    /// Things worth knowing that did not stop the install (a large clone).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub struct Context<'a> {
@@ -638,7 +645,7 @@ impl Error {
             ),
             Self::CloneTooLarge => (
                 ErrorCode::InvalidInput,
-                "the repository is larger than an install takes (20000 files or 256 MiB without .git and vendor)".into(),
+                "the repository is far larger than an install takes (over 200000 files or 2 GiB without .git and vendor)".into(),
             ),
             Self::RepositoryUserIni => (
                 ErrorCode::InvalidInput,
@@ -880,6 +887,7 @@ fn run_install(
     data: Option<&nextcloud::DataDir>,
     cancel: &CancellationToken,
 ) -> Result<InstallResult, Error> {
+    let mut warnings: Vec<String> = Vec::new();
     match &req.source {
         Source::Fresh if req.application == Application::Joomla => {
             unpack_archive(ctx, req, root, staging, docroot)?
@@ -894,7 +902,11 @@ fn run_install(
             &create_project_args(req.application, staging),
             cancel,
         )?,
-        Source::Git { url } => clone_repository(ctx, req, root, root_str, staging, url, cancel)?,
+        Source::Git { url } => {
+            warnings.extend(clone_repository(
+                ctx, req, root, root_str, staging, url, cancel,
+            )?);
+        }
     }
     if req.application == Application::Drupal {
         // Drush is the project's own dependency, not a global tool.
@@ -970,6 +982,7 @@ fn run_install(
             req.application.admin_path()
         ),
         completed_at_unix_secs: unix_now_secs(),
+        warnings,
     })
 }
 
@@ -1015,7 +1028,7 @@ fn clone_repository(
     staging: &str,
     url: &str,
     cancel: &CancellationToken,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     let output = exec(
         ctx,
         req,
@@ -1076,6 +1089,7 @@ fn clone_repository(
     }
     let (mut entries, mut bytes) = (MAX_CLONE_ENTRIES, MAX_CLONE_BYTES);
     within_limits(&staged, &mut entries, &mut bytes, 0)?;
+    let warning = large_clone_warning(MAX_CLONE_ENTRIES - entries, MAX_CLONE_BYTES - bytes);
     let example = read_env_example(&staged)?;
     staged
         .write_atomic(&rel(".env")?, example.as_bytes())
@@ -1099,7 +1113,18 @@ fn clone_repository(
         cancel,
     )?;
     locked_version(&staged, Application::Laravel).map_err(|_| Error::NotLaravel)?;
-    Ok(())
+    Ok(warning)
+}
+
+/// A recommendation, not a refusal: a clone above the warning size installs,
+/// and the result says the site is large.
+fn large_clone_warning(files: usize, bytes: u64) -> Option<String> {
+    (files > WARN_CLONE_ENTRIES || bytes > WARN_CLONE_BYTES).then(|| {
+        format!(
+            "the repository is large ({files} files, {} MiB without .git and vendor); it was installed, but a site this size is slower to install, back up and clone",
+            bytes / (1024 * 1024)
+        )
+    })
 }
 
 /// Counts the tree below `dir` against what is left of the limits; a link
@@ -2983,20 +3008,47 @@ exit 0
     }
 
     #[test]
-    fn a_repository_over_the_limits_is_refused_before_composer_and_undone() {
+    fn a_large_repository_installs_and_the_result_says_it_is_large() {
         let f = fixture();
         repo(&f, LARAVEL_LOCK, true);
         let many = f.dir.path().join("repo/many");
         fs::create_dir_all(&many).unwrap();
-        for i in 0..MAX_CLONE_ENTRIES {
+        for i in 0..=WARN_CLONE_ENTRIES {
             fs::write(many.join(format!("f{i}")), "").unwrap();
         }
-        let error = f
+        let result = f
             .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
-            .unwrap_err();
-        assert!(matches!(error, Error::CloneTooLarge), "{error:?}");
-        assert!(!f.calls().contains("composer"), "{}", f.calls());
-        assert_eq!(f.names(""), ["public"]);
+            .unwrap();
+        assert_eq!(result.application, "laravel");
+        assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+        assert!(
+            result.warnings[0].contains("is large"),
+            "{:?}",
+            result.warnings
+        );
+        // A normal repository carries no warning, and none is serialised.
+        let g = fixture();
+        repo(&g, LARAVEL_LOCK, true);
+        let normal = g
+            .run_plan(&laravel_git_plan(&g, GIT_URL), REQUEST_ID, None)
+            .unwrap();
+        assert!(normal.warnings.is_empty());
+        assert!(
+            serde_json::to_value(&normal)
+                .unwrap()
+                .get("warnings")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_warning_starts_above_its_size_and_the_refusal_far_above_it() {
+        assert_eq!(
+            large_clone_warning(WARN_CLONE_ENTRIES, WARN_CLONE_BYTES),
+            None
+        );
+        assert!(large_clone_warning(WARN_CLONE_ENTRIES + 1, 0).is_some());
+        assert!(large_clone_warning(0, WARN_CLONE_BYTES + 1).is_some());
     }
 
     #[test]

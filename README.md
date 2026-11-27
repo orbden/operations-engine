@@ -46,8 +46,9 @@ its authoritative operation list. The current source includes:
   exact host allowlist, no redirect, size and time limits, SHA-256 checked
   before unpacking). Database and administrator passwords reach the installer
   only through the environment, never an argument, result or journal record.
-  A Laravel clone is refused above 20000 files or 256 MiB (without `.git` and
-  `vendor/`), and when it carries its own `public/.user.ini`.
+  A Laravel clone above 20000 files or 256 MiB (without `.git` and `vendor/`)
+  installs with a warning in the result; far above that (200000 files or
+  2 GiB) it is refused, as is one that carries its own `public/.user.ini`.
 - Node applications: `node.build` (npm build in a throw-away, digest-pinned
   container), `node.deployApp`, `node.appStatus`, `node.restartApp` and
   `node.removeApp` (one container per application).
