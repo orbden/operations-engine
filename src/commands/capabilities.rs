@@ -267,6 +267,7 @@ pub const OPERATIONS: &[&str] = &[
     "stack.stopIdleRuntime",
     "stack.ensureRuntime",
     "stack.ensureDataService",
+    "stack.stopDataService",
     "stack.reloadWorkers",
     "stack.flushFpc",
     "stack.writeSiteService",

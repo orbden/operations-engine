@@ -1651,6 +1651,25 @@ and a replay of the same idempotency key returns the recorded failure. The
 result is `{"service": "...", "healthyAtUnixSecs": n}`. A service that is
 already healthy is left running. No secret travels in this request.
 
+## `stack.stopDataService`
+
+`stack stop-data-service --service postgres-<major> --request-id <uuid>` stops
+one PostgreSQL line (`docker compose stop <service>`) under the shared stack
+lock (a held lock is `CONFLICT`), but only when the line is empty. Inside the
+running line the engine counts the databases other than `postgres`,
+`template0`, `template1` and the bootstrap database (`POSTGRES_DB`), and the
+user tables of the bootstrap database. Any database or table means the line is
+left running and the result says so. A line that cannot be asked (the count
+fails or is unreadable) is left running too: an unknown answer is never
+treated as empty. A line that is not running reports `stopped: true` without
+running anything.
+
+`--service` follows the same rule as `stack.ensureDataService`; anything else
+is `INVALID_INPUT`. The result is `{"service": "...", "stopped": bool,
+"databases": n, "bootstrapTables": n, "completedAtUnixSecs": n}`. The caller
+decides what a refusal means; the engine does not know which sites a line
+serves, only what it holds. No secret travels in this request or its result.
+
 ## `backup.discardPartial`
 
 `backup discard-partial (--database <name> | --import | --trigger |

@@ -55,6 +55,11 @@ pub fn run(command: StackCommand) -> Result<Response, ResponseBuildError> {
             &request_id,
             idempotency_key.as_deref(),
         ),
+        StackCommand::StopDataService {
+            service,
+            request_id,
+            idempotency_key,
+        } => stop_data_service(&service, &request_id, idempotency_key.as_deref()),
         StackCommand::ReloadWorkers {
             runtime_id,
             request_id,
@@ -440,6 +445,30 @@ fn ensure_data_service(
         };
     run_service_operation(ENSURE_DATA_SERVICE_OPERATION, |ctx, cancel| {
         ensure_data_service(ctx, &request, cancel)
+    })
+}
+
+fn stop_data_service(
+    service: &str,
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::stack_service::{
+        STOP_DATA_SERVICE_OPERATION, StopDataServiceRequest, stop_data_service,
+    };
+
+    let request = match StopDataServiceRequest::parse(service, request_id, idempotency_key) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(Response::failure(
+                STOP_DATA_SERVICE_OPERATION,
+                ErrorCode::InvalidInput,
+                error.message(),
+            ));
+        }
+    };
+    run_service_operation(STOP_DATA_SERVICE_OPERATION, |ctx, cancel| {
+        stop_data_service(ctx, &request, cancel)
     })
 }
 

@@ -50,8 +50,9 @@ its authoritative operation list. The current source includes:
   container), `node.deployApp`, `node.appStatus`, `node.restartApp` and
   `node.removeApp` (one container per application).
 - `stack.ensureDataService` starts one PostgreSQL line of the managed stack;
-  `db.provisionPostgresUser` grants the role the `public` schema of its
-  database.
+  `stack.stopDataService` stops one only when it holds no database and no
+  table of its own; `db.provisionPostgresUser` grants the role the `public`
+  schema of its database.
 - A server-side change journal (`site.changeLog.append`, `site.changeLog.list`): who
   changed what, when and with which result, without secrets or one-time links.
 - Permissions repair, Meilisearch lifecycle, system updates, Docker start,

@@ -208,6 +208,7 @@ fn capabilities_describe_only_implemented_operations() {
             "stack.stopIdleRuntime",
             "stack.ensureRuntime",
             "stack.ensureDataService",
+            "stack.stopDataService",
             "stack.reloadWorkers",
             "stack.flushFpc",
             "stack.writeSiteService",

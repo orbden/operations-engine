@@ -19,6 +19,7 @@ struct Fixture {
     docker: String,
     calls: PathBuf,
     health: PathBuf,
+    base: PathBuf,
 }
 
 impl Fixture {
@@ -35,11 +36,14 @@ impl Fixture {
             format!(
                 "#!/bin/sh\necho \"$(pwd) $*\" >> '{calls}'\n\
                  case \"$*\" in\n\
-                 *' ps -q '*) echo c0ffee ;;\n\
+                 *' ps -q '*) cat '{running}' 2>/dev/null || echo c0ffee ;;\n\
+                 *' exec -T '*) cat '{content}' 2>/dev/null ;;\n\
                  inspect*) cat '{health}' 2>/dev/null || echo healthy ;;\n\
                  esac\nexit {exit}\n",
                 calls = calls.display(),
                 health = base.join("health").display(),
+                running = base.join("running").display(),
+                content = base.join("content").display(),
             ),
         )
         .unwrap();
@@ -52,6 +56,7 @@ impl Fixture {
             stack_dir: base.join("stack"),
             docker: docker.to_string_lossy().into_owned(),
             health: base.join("health"),
+            base: base.clone(),
             calls,
             _dir: dir,
         }
@@ -1396,4 +1401,74 @@ fn requests_reject_malformed_fields() {
         StopRequest::parse("../x", ID, None).err(),
         Some(RequestError::InvalidRuntimeId)
     );
+}
+
+#[test]
+fn stop_data_service_stops_only_an_empty_line() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let req = StopDataServiceRequest::parse("postgres-19", ID, None).unwrap();
+
+    let empty = Fixture::new(0);
+    fs::write(empty.base.join("content"), "0 0\n").unwrap();
+    let result = stop_data_service(&empty.ctx(), &req, &CancellationToken::default()).unwrap();
+    assert!(result.stopped);
+    let calls = empty.calls();
+    assert!(
+        calls.last().unwrap().ends_with(" stop postgres-19"),
+        "{calls:?}"
+    );
+
+    for content in ["1 0\n", "0 2\n"] {
+        let full = Fixture::new(0);
+        fs::write(full.base.join("content"), content).unwrap();
+        let result = stop_data_service(&full.ctx(), &req, &CancellationToken::default()).unwrap();
+        assert!(!result.stopped, "{content}");
+        assert!(
+            !full.calls().iter().any(|c| c.contains(" stop ")),
+            "{content}"
+        );
+    }
+}
+
+#[test]
+fn stop_data_service_leaves_a_line_it_cannot_ask_and_skips_one_that_is_not_running() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let req = StopDataServiceRequest::parse("postgres-19", ID, None).unwrap();
+
+    let unreadable = Fixture::new(0);
+    fs::write(unreadable.base.join("content"), "psql: error").unwrap();
+    assert!(stop_data_service(&unreadable.ctx(), &req, &CancellationToken::default()).is_err());
+    assert!(!unreadable.calls().iter().any(|c| c.contains(" stop ")));
+
+    let down = Fixture::new(0);
+    fs::write(down.base.join("running"), "").unwrap();
+    let result = stop_data_service(&down.ctx(), &req, &CancellationToken::default()).unwrap();
+    assert!(result.stopped);
+    assert_eq!(down.calls().len(), 1);
+}
+
+#[test]
+fn stop_data_service_accepts_only_a_postgres_line() {
+    for good in ["postgres-18", "postgres-19", "postgres-100"] {
+        assert!(
+            StopDataServiceRequest::parse(good, ID, None).is_ok(),
+            "{good}"
+        );
+    }
+    for bad in [
+        "postgres",
+        "postgres-1",
+        "postgres-1000",
+        "mariadb",
+        "ingress",
+        "runtime-php",
+        "postgres-1a",
+        "postgres-19; rm",
+    ] {
+        assert!(
+            StopDataServiceRequest::parse(bad, ID, None).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(StopDataServiceRequest::parse("postgres-19", "nope", None).is_err());
 }
