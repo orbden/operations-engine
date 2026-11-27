@@ -225,6 +225,46 @@ pub struct EnsureDataServiceResult {
     pub healthy_at_unix_secs: u64,
 }
 
+/// Stop one PostgreSQL line's service, only when it holds no data.
+pub struct StopDataServiceRequest {
+    pub service: String,
+    pub request_id: RequestId,
+    pub idempotency_key: Option<IdempotencyKey>,
+}
+
+impl StopDataServiceRequest {
+    pub fn parse(service: &str, request_id: &str, key: Option<&str>) -> Result<Self, RequestError> {
+        if !valid_postgres_service(service) {
+            return Err(RequestError::InvalidDataService);
+        }
+        let request_id =
+            RequestId::parse(request_id).map_err(|_| RequestError::InvalidRequestId)?;
+        let idempotency_key = key
+            .map(IdempotencyKey::parse)
+            .transpose()
+            .map_err(|_| RequestError::InvalidIdempotencyKey)?;
+        Ok(Self {
+            service: service.to_owned(),
+            request_id,
+            idempotency_key,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopDataServiceResult {
+    pub service: String,
+    /// `false` when the line holds data and was left running. A line that was
+    /// already stopped reports `true`.
+    pub stopped: bool,
+    /// Databases besides the system ones and the bootstrap database.
+    pub databases: u64,
+    /// User tables in the bootstrap database.
+    pub bootstrap_tables: u64,
+    pub completed_at_unix_secs: u64,
+}
+
 /// The runtime pool a `stack.reloadWorkers` / `stack.flushFpc` targets.
 /// Same fields as a stop request.
 pub type RuntimeRequest = StopRequest;

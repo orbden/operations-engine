@@ -4,6 +4,7 @@ pub const RELOAD_OPERATION: &str = "stack.reloadCaddy";
 pub const STOP_OPERATION: &str = "stack.stopIdleRuntime";
 pub const ENSURE_OPERATION: &str = "stack.ensureRuntime";
 pub const ENSURE_DATA_SERVICE_OPERATION: &str = "stack.ensureDataService";
+pub const STOP_DATA_SERVICE_OPERATION: &str = "stack.stopDataService";
 pub const RELOAD_WORKERS_OPERATION: &str = "stack.reloadWorkers";
 pub const FLUSH_FPC_OPERATION: &str = "stack.flushFpc";
 pub const WRITE_SITE_SERVICE_OPERATION: &str = "stack.writeSiteService";
@@ -55,3 +56,12 @@ pub(super) const FLUSH_FPC_SCRIPT: &str =
     "curl -sf -X PURGE http://localhost/ 2>/dev/null; rm -rf /tmp/souin 2>/dev/null; echo ok";
 
 pub(super) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// Run inside a PostgreSQL line as its own superuser (`POSTGRES_USER`, which
+/// the image sets): how many databases other than the system ones and the
+/// bootstrap database exist, and how many user tables the bootstrap database
+/// holds. Fixed text; nothing from the caller enters it.
+pub(super) const DATA_SERVICE_CONTENT_SCRIPT: &str = "u=\"$POSTGRES_USER\"; b=\"${POSTGRES_DB:-$u}\"; \
+     n=$(psql -U \"$u\" -d postgres -Atc \"SELECT count(*) FROM pg_database WHERE datname NOT IN ('postgres','template0','template1') AND datname <> '$b'\") || exit 1; \
+     t=$(psql -U \"$u\" -d \"$b\" -Atc \"SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')\") || exit 1; \
+     echo \"$n $t\"";

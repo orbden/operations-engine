@@ -186,6 +186,17 @@ pub enum StackCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Stop one PostgreSQL line's service, only when it holds no database
+    /// and no table of its own, under the shared stack lock.
+    StopDataService {
+        /// `postgres-<major>`.
+        #[arg(long = "service")]
+        service: String,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
     /// Restart every site process (and so its PHP workers) in one runtime
     /// pool through s6, under the shared stack lock.
     ReloadWorkers {
@@ -326,6 +337,7 @@ impl StackCommand {
             Self::StopIdleRuntime { .. } => "stack.stopIdleRuntime",
             Self::EnsureRuntime { .. } => "stack.ensureRuntime",
             Self::EnsureDataService { .. } => "stack.ensureDataService",
+            Self::StopDataService { .. } => "stack.stopDataService",
             Self::ReloadWorkers { .. } => "stack.reloadWorkers",
             Self::FlushFpc { .. } => "stack.flushFpc",
             Self::WriteSiteService { .. } => "stack.writeSiteService",
