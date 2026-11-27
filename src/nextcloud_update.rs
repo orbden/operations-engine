@@ -679,18 +679,45 @@ fn limits() -> ProcessLimits {
     }
 }
 
+/// The code directory as `tar -C` should open it. On Linux that is the open
+/// descriptor itself (`/proc/<pid>/fd/<n>`), so no path is resolved a second
+/// time and a tenant cannot swap the directory for a link between the check
+/// and tar's start. Elsewhere (development hosts) it is the path, which is
+/// refused when it is a link.
+fn anchored_dir(
+    project: &ManagedRoot,
+    req: &Request,
+) -> Result<(std::os::fd::OwnedFd, PathBuf), Error> {
+    let doc = open_code_dir(project, &req.docroot_name).map_err(|_| Error::BundleFailed)?;
+    let fd = doc.try_clone_fd().map_err(|_| Error::BundleFailed)?;
+    #[cfg(target_os = "linux")]
+    let path = {
+        use std::os::fd::AsRawFd;
+        PathBuf::from(format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            fd.as_raw_fd()
+        ))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let path = {
+        if !std::fs::symlink_metadata(req.base.root()).is_ok_and(|meta| meta.is_dir()) {
+            return Err(Error::BundleFailed);
+        }
+        req.base.root().to_path_buf()
+    };
+    Ok((fd, path))
+}
+
 fn tar_bundle(
     ctx: &Context<'_>,
     req: &Request,
+    project: &ManagedRoot,
     dir: &str,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
-    // `tar -C` follows a link: refuse one (the preflight opened the directory
-    // without following; this keeps the window to the tar start only, and the
-    // bundle is root-only).
-    if !std::fs::symlink_metadata(req.base.root()).is_ok_and(|meta| meta.is_dir()) {
-        return Err(Error::BundleFailed);
-    }
+    // `fd` stays open until tar has finished.
+    let (fd, from) = anchored_dir(project, req)?;
     let file = ctx
         .backup_root
         .create_new_file(&rel(format!("{dir}/files.tar.gz")))
@@ -698,7 +725,7 @@ fn tar_bundle(
     let output = process::run_with_stdout_file(
         &ProcessRequest::new(ctx.tar_program).args([
             "-C".to_owned(),
-            req.base.root().display().to_string(),
+            from.display().to_string(),
             "-czpf".into(),
             "-".into(),
             "--numeric-owner".into(),
@@ -709,6 +736,7 @@ fn tar_bundle(
         cancel,
     )
     .map_err(Error::Run)?;
+    drop(fd);
     if !exited_ok(&output) {
         return Err(Error::BundleFailed);
     }
@@ -718,6 +746,7 @@ fn tar_bundle(
 fn bundle(
     ctx: &Context<'_>,
     req: &Request,
+    project: &ManagedRoot,
     connection: &DbConnection,
     previous_maintenance: bool,
     version_before: &str,
@@ -727,7 +756,7 @@ fn bundle(
     ctx.backup_root
         .create_dir_all(&rel(&dir))
         .map_err(|_| Error::BundleFailed)?;
-    tar_bundle(ctx, req, &dir, cancel)?;
+    tar_bundle(ctx, req, project, &dir, cancel)?;
     let file = ctx
         .backup_root
         .create_new_file(&rel(format!("{dir}/database.sql")))
@@ -1317,6 +1346,7 @@ fn run(
         bundle(
             ctx,
             req,
+            &project,
             &connection,
             previous_maintenance,
             &installed,
