@@ -19,13 +19,15 @@
 //!    is not empty (or not a plain directory) is refused before anything is
 //!    downloaded. On failure one this install created is removed, and one that
 //!    was already there (empty) is emptied again. `site.removeRoot` removes
-//!    only `<content root>/<domain>`, so deleting the site keeps the data.
+//!    only `<content root>/<domain>`, so deleting the site keeps the data
+//!    unless the caller also asks for `--with-data-dir`.
 //! 4. `occ maintenance:install` runs through `INSTALL_SCRIPT`, which builds
 //!    Nextcloud's argv inside PHP from positional arguments and two
 //!    environment variables, then loads `console.php`: the passwords are in
 //!    neither the `docker` nor the container's `php` command line. Then
-//!    `trusted_domains`, `overwrite.cli.url` and `overwriteprotocol` are set
-//!    for the site's address, and `occ status` must report it installed.
+//!    `trusted_domains`, `overwrite.cli.url`, `overwriteprotocol` and
+//!    `overwritehost` are set for the site's address, `trusted_proxies` names
+//!    the loopback hop, and `occ status` must report it installed.
 
 use std::{io::BufReader, time::Duration};
 
@@ -291,6 +293,9 @@ pub(super) fn setup(
         // The runtime pool rewrites Host for its private hop; Nextcloud builds
         // its redirects from `overwritehost` for web requests.
         ("overwritehost", None, domain),
+        // The site's own FrankenPHP is reached from the pool's Caddy over the
+        // loopback, which is the proxy Nextcloud sees.
+        ("trusted_proxies", Some("0"), "127.0.0.1"),
     ] {
         let value = format!("--value={value}");
         let mut args = vec!["php", "occ", "--no-warnings", "config:system:set", key];

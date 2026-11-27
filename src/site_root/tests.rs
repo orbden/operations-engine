@@ -915,3 +915,66 @@ fn sigkill_around_the_rename_leaves_one_directory_and_the_next_move_recovers() {
         }
     }
 }
+
+#[test]
+fn the_data_directory_beside_the_site_goes_only_when_asked_and_confirmed() {
+    let fixture = Fixture::new();
+    let with_data = |id: &str, confirm: bool| {
+        let mut req = rm("nc.test", None, confirm, id);
+        req.data_dir = true;
+        req
+    };
+    let set_up = |fixture: &Fixture| {
+        fixture.site("nc.test");
+        fs::create_dir_all(fixture.path("nc.test-data/admin/files")).unwrap();
+        fs::write(fixture.path("nc.test-data/admin/files/a.txt"), "mine").unwrap();
+        fs::create_dir(fixture.path("other.test-data")).unwrap();
+    };
+
+    // Without the flag the data directory stays.
+    set_up(&fixture);
+    fixture.remove(&rm("nc.test", None, true, ID)).unwrap();
+    assert!(!fixture.path("nc.test").exists());
+    assert!(fixture.path("nc.test-data/admin/files/a.txt").exists());
+
+    // With it, both go (and only that site's), after the same confirmation.
+    let fixture = Fixture::new();
+    set_up(&fixture);
+    assert!(matches!(
+        fixture.remove(&with_data(OTHER_ID, false)),
+        Err(Error::NotEmpty)
+    ));
+    assert!(fixture.path("nc.test-data/admin/files/a.txt").exists());
+    let result = fixture.remove(&with_data(THIRD_ID, true)).unwrap();
+    assert_eq!(result.removed.len(), 2, "{:?}", result.removed);
+    assert!(!fixture.path("nc.test").exists());
+    assert!(!fixture.path("nc.test-data").exists());
+    assert!(fixture.path("other.test-data").is_dir());
+
+    // A site without a data directory is a plain success.
+    let fixture = Fixture::new();
+    fixture.site("nc.test");
+    let result = fixture.remove(&with_data(ID, true)).unwrap();
+    assert_eq!(result.removed.len(), 1);
+}
+
+#[test]
+fn a_data_directory_that_is_a_symlink_is_refused_and_nothing_is_removed() {
+    let fixture = Fixture::new();
+    fixture.site("nc.test");
+    let outside = fixture.content.as_path().parent().unwrap().join("keep2");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("precious"), "data").unwrap();
+    symlink(&outside, fixture.path("nc.test-data")).unwrap();
+    let mut req = rm("nc.test", None, true, ID);
+    req.data_dir = true;
+    assert!(matches!(fixture.remove(&req), Err(Error::UnsafePath)));
+    assert!(
+        fixture.path("nc.test").is_dir(),
+        "refused before any removal"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("precious")).unwrap(),
+        "data"
+    );
+}
