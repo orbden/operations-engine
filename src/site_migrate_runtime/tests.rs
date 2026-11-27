@@ -806,3 +806,17 @@ fn the_request_is_validated() {
         Some(RequestError::InvalidRequestId)
     );
 }
+
+#[test]
+fn the_pool_route_carries_https_on_to_the_site_and_nothing_but_http_or_https() {
+    let text = pool_reverse_proxy_caddyfile(&domain(), 9101);
+    assert_eq!(
+        text,
+        "http://shop.example.test {\n    map {http.request.header.X-Forwarded-Proto} {wcp_proto} {\n        https https\n        default http\n    }\n    reverse_proxy 127.0.0.1:9101 {\n        header_up Host 127.0.0.1:9101\n        header_up X-Forwarded-Proto {wcp_proto}\n    }\n}\n"
+    );
+    // Only the loopback upstream, and the header is a value of the map, never
+    // a copy of what the client sent.
+    assert_eq!(text.matches("reverse_proxy").count(), 1);
+    assert!(!text.contains("header_up X-Forwarded-Proto {http.request"));
+    assert_eq!(text.matches('{').count(), text.matches('}').count());
+}

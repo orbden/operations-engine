@@ -427,11 +427,18 @@ pub fn retarget_route(route: &str, new_target: &RuntimeId) -> Option<String> {
 }
 
 /// The pool's own route to one site's child process (the exec config).
+///
+/// The ingress terminates TLS and tells the pool `X-Forwarded-Proto: https`;
+/// the pool does not trust that header (it would overwrite it with `http` for
+/// this hop), so the application would believe the request was plain HTTP.
+/// Only the ingress reaches the pool, and the ingress overwrites whatever a
+/// client sent, so the value is carried on, but only as `https` or `http`:
+/// any other text becomes `http`.
 pub fn pool_reverse_proxy_caddyfile(domain: &Domain, port: u16) -> String {
     // The child listens on a loopback-only site address; Host is retargeted
     // for that private hop.
     format!(
-        "http://{domain} {{\n    reverse_proxy 127.0.0.1:{port} {{\n        header_up Host 127.0.0.1:{port}\n    }}\n}}\n"
+        "http://{domain} {{\n    map {{http.request.header.X-Forwarded-Proto}} {{wcp_proto}} {{\n        https https\n        default http\n    }}\n    reverse_proxy 127.0.0.1:{port} {{\n        header_up Host 127.0.0.1:{port}\n        header_up X-Forwarded-Proto {{wcp_proto}}\n    }}\n}}\n"
     )
 }
 
