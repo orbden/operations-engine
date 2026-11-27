@@ -19,6 +19,57 @@ fn exited_ok(output: &process::ProcessOutput) -> bool {
     crate::drupal_action::exited_ok(output)
 }
 
+/// The container to `docker exec` into for a database host `host`. A site of
+/// the managed stack names its database by the Compose service alias
+/// (`mariadb-11`), which is not a container name; the one running container of
+/// the stack project with that service label is used. Any other host (a plain
+/// container) is its own container name. `host` has to be a valid container
+/// name already; a lookup that does not give exactly one id is not guessed
+/// at, the host stays as it is.
+pub(crate) fn resolve_container(
+    docker_program: &str,
+    host: &str,
+    cancel: &CancellationToken,
+) -> String {
+    let request = ProcessRequest::new(docker_program).args([
+        "ps".to_owned(),
+        "-q".into(),
+        "--no-trunc".into(),
+        "--filter".into(),
+        format!(
+            "label=com.docker.compose.project={}",
+            crate::compose::COMPOSE_PROJECT
+        ),
+        "--filter".into(),
+        format!("label=com.docker.compose.service={host}"),
+    ]);
+    let limits = ProcessLimits {
+        timeout: std::time::Duration::from_secs(30),
+        max_stdout_bytes: 4096,
+        max_stderr_bytes: 4096,
+    };
+    let Ok(output) = process::run(&request, &limits, cancel) else {
+        return host.to_owned();
+    };
+    let text = output.stdout.text();
+    let ids: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    match ids.as_slice() {
+        [id] if exited_ok(&output)
+            && id.len() == 64
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+        {
+            (*id).to_owned()
+        }
+        _ => host.to_owned(),
+    }
+}
+
 /// MySQL/MariaDB client call in the database container, with the password
 /// only in the environment of that one `docker exec`.
 pub(crate) fn db_client(docker_program: &str, connection: &DbConnection) -> ProcessRequest {
@@ -124,4 +175,69 @@ pub(crate) fn empty_database(
         return Err(DbError::Failed("the database tables could not be dropped"));
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A fake `docker` whose `ps` answers `reply` and exits `code`.
+    fn docker(dir: &std::path::Path, reply: &str, code: i32) -> String {
+        let path = dir.join("docker");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\nprintf '%s' '{reply}'\nexit {code}\n",
+                log = dir.join("calls.log").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    #[test]
+    fn a_stack_service_alias_becomes_its_one_running_container() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::default();
+        let program = docker(dir.path(), &format!("{ID}\n"), 0);
+        assert_eq!(resolve_container(&program, "mariadb-11", &cancel), ID);
+        let calls = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert!(
+            calls.contains("label=com.docker.compose.project=wcp"),
+            "{calls}"
+        );
+        assert!(
+            calls.contains("label=com.docker.compose.service=mariadb-11"),
+            "{calls}"
+        );
+    }
+
+    #[test]
+    fn anything_but_exactly_one_container_leaves_the_host_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::default();
+        for (reply, code) in [
+            ("", 0),
+            (&format!("{ID}\n{ID}\n"), 0),
+            ("not-an-id\n", 0),
+            (&ID.to_uppercase(), 0),
+            (&ID[..63], 0),
+            (ID, 1),
+        ] {
+            let program = docker(dir.path(), reply, code);
+            assert_eq!(
+                resolve_container(&program, "plain-db", &cancel),
+                "plain-db",
+                "{reply:?} {code}"
+            );
+        }
+        assert_eq!(
+            resolve_container("/nonexistent/docker", "plain-db", &cancel),
+            "plain-db"
+        );
+    }
 }

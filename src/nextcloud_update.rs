@@ -523,6 +523,18 @@ fn db_connection(config: &str) -> Result<DbConnection, Error> {
     })
 }
 
+/// `db_connection` with the host turned into the container to `docker exec`
+/// into (a stack site's `mariadb-11` alias is not a container name).
+fn db_container_connection(
+    ctx: &Context<'_>,
+    config: &str,
+    cancel: &CancellationToken,
+) -> Result<DbConnection, Error> {
+    let mut connection = db_connection(config)?;
+    connection.host = update_db::resolve_container(ctx.docker_program, &connection.host, cancel);
+    Ok(connection)
+}
+
 /// The data directory must be named and outside the code directory: the
 /// bundle holds the code directory, and replacing or restoring it must never
 /// reach the data.
@@ -1090,7 +1102,7 @@ fn rollback(
 
     record(ctx, id, Step::FilesRestored);
     // Database: the restored config.php names the connection.
-    let connection = db_connection(&read_config(&doc)?)?;
+    let connection = db_container_connection(ctx, &read_config(&doc)?, &cancel)?;
     update_db::empty_database(ctx.docker_program, &connection, &limits, &cancel).map_err(
         |error| match error {
             update_db::DbError::Run(error) => Error::Run(error),
@@ -1325,7 +1337,7 @@ fn run(
         }
     }
     let config = read_config(&doc)?;
-    let connection = db_connection(&config)?;
+    let connection = db_container_connection(ctx, &config, cancel)?;
     data_dir_outside(&config, docroot)?;
     let installed =
         install::version(&project, &req.docroot_name).map_err(|_| Error::VersionUnreadable)?;

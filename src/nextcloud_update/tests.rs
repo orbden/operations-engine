@@ -26,6 +26,9 @@ w=
 prev=
 for a in "$@"; do [ "$prev" = "-w" ] && w=$a; prev=$a; done
 case "$*" in
+  "ps "*)
+    if [ -e "$S/stack-db" ]; then echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; fi
+    exit 0;;
   *"occ --no-warnings status"*)
     [ -e "$S/status-fail" ] && exit 1
     if [ -e "$S/status-garbage" ]; then echo "not json"; exit 0; fi
@@ -1167,4 +1170,31 @@ fn a_code_directory_swapped_for_a_link_is_never_followed() {
         "not yours"
     );
     assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
+}
+
+#[test]
+fn a_stack_database_alias_is_replaced_by_its_container_for_every_database_call() {
+    let fx = Fx::new("35.0.3", "35.0.4");
+    fx.flag("stack-db");
+    fx.flag("fail-upgrade");
+    // The dump of the bundle and the rollback's drop and import all go to the
+    // container the alias resolves to, never to `wcp-db`.
+    let result = fx.update(A).unwrap();
+    assert_eq!(result.outcome, "rolledBack");
+    let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let calls = fx.calls();
+    let database_calls: Vec<&str> = calls
+        .lines()
+        .filter(|line| line.contains("mariadb"))
+        .collect();
+    assert!(database_calls.len() >= 4, "{calls}");
+    for line in database_calls {
+        assert!(line.contains(&format!(" {id} mariadb")), "{line}");
+        assert!(!line.contains("wcp-db"), "{line}");
+    }
+    assert!(
+        calls.contains("label=com.docker.compose.service=wcp-db"),
+        "{calls}"
+    );
+    fx.assert_untouched("35.0.3");
 }
