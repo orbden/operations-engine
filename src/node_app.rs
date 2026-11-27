@@ -1034,10 +1034,9 @@ fn carry_hashed(previous: &ManagedRoot, to: &ManagedRoot) {
     let Ok(Some(from_dir)) = open_existing(previous, &astro) else {
         return;
     };
-    if !to.exists(&astro) {
-        if to.create_dir(&astro).is_err() || to.set_mode(&astro, 0o755).is_err() {
-            return;
-        }
+    if !to.exists(&astro) && (to.create_dir(&astro).is_err() || to.set_mode(&astro, 0o755).is_err())
+    {
+        return;
     }
     let Ok(Some(to_dir)) = open_existing(to, &astro) else {
         return;
