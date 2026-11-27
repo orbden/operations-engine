@@ -728,7 +728,19 @@ fn run_patch_window(request_id: &str) -> Result<Response, ResponseBuildError> {
         now_secs(),
         &mut |request| patch::execute(&context, request, &cancel),
     ) {
-        Ok(last) => Response::success(window::RUN_OPERATION, last),
+        Ok(last) => {
+            // A failure is also told to the channels the agents use, from here,
+            // so it reaches the owner with the panel closed. Best effort.
+            if let Some((text, payload)) = window::failure_summary(&last) {
+                window::notify_failure(
+                    std::path::Path::new(window::NOTIFY_FILE),
+                    &text,
+                    &payload,
+                    &mut window::curl_post,
+                );
+            }
+            Response::success(window::RUN_OPERATION, last)
+        }
         Err(window::RunError::NotEnabled) => Response::success(
             window::RUN_OPERATION,
             serde_json::json!({ "atUnixSecs": now_secs(), "results": [] }),

@@ -279,6 +279,120 @@ pub fn timer_installed(unit_dir: &Path) -> bool {
     unit_dir.join(format!("{UNIT_NAME}.timer")).is_file()
 }
 
+/// The webhook channels the backup agents and the other agents already use:
+/// `/root/.wcp/notify.conf`, written by the panel.
+pub const NOTIFY_FILE: &str = "/root/.wcp/notify.conf";
+
+/// What to tell the channels about a run: the services that failed, or
+/// `None` when nothing failed (a successful or skipped run is not news).
+/// Names and the engine's own short reason only; no image, no secret.
+pub fn failure_summary(last: &LastRun) -> Option<(String, serde_json::Value)> {
+    let failed: Vec<&Outcome> = last
+        .results
+        .iter()
+        .filter(|r| r.outcome == "failed")
+        .collect();
+    if failed.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = failed
+        .iter()
+        .map(|r| {
+            format!(
+                "{}: {}",
+                r.service,
+                r.message.as_deref().unwrap_or("failed")
+            )
+        })
+        .collect();
+    let text = format!(
+        "Service patch window: {} update(s) failed and were rolled back. {}",
+        failed.len(),
+        lines.join("; ")
+    );
+    let payload = serde_json::json!({
+        "event": "service-patch-window",
+        "status": "failed",
+        "atUnixSecs": last.at_unix_secs,
+        "failed": failed.iter().map(|r| serde_json::json!({
+            "service": r.service, "message": r.message,
+        })).collect::<Vec<_>>(),
+    });
+    Some((text, payload))
+}
+
+/// Posts `text`/`payload` to every enabled channel of `notify_file` that wants
+/// failures (the same file, gates and bodies as the agents' `notify()`), one
+/// `post(url, body)` each. Returns how many were sent. A missing or broken
+/// file sends nothing; a failed post is not retried and never fails the run.
+pub fn notify_failure(
+    notify_file: &Path,
+    text: &str,
+    payload: &serde_json::Value,
+    post: &mut dyn FnMut(&str, &str) -> bool,
+) -> usize {
+    let Ok(raw) = std::fs::read_to_string(notify_file) else {
+        return 0;
+    };
+    let Ok(conf) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return 0;
+    };
+    let mut sent = 0;
+    for channel in conf["channels"].as_array().into_iter().flatten() {
+        if channel["enabled"].as_bool() == Some(false)
+            || channel["on_failure"].as_bool() == Some(false)
+        {
+            continue;
+        }
+        let Some(url) = channel["webhook_url"]
+            .as_str()
+            .filter(|u| u.starts_with("https://"))
+        else {
+            continue;
+        };
+        let body = match channel["type"].as_str().unwrap_or("webhook") {
+            "slack" => serde_json::json!({"text": text, "username": "OrbDen Engine"}),
+            "discord" => serde_json::json!({"content": text}),
+            _ => payload.clone(),
+        };
+        if post(url, &body.to_string()) {
+            sent += 1;
+        }
+    }
+    sent
+}
+
+/// The production `post`: `curl` with the address and body in a config read
+/// from stdin, so the webhook address (a secret) is in no argument list.
+pub fn curl_post(url: &str, body: &str) -> bool {
+    use crate::process::{self, CancellationToken, ProcessLimits, ProcessRequest};
+    let quote = |value: &str| {
+        format!(
+            "\"{}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+        )
+    };
+    let config = format!(
+        "url = {}\nrequest = \"POST\"\nheader = \"Content-Type: application/json\"\ndata = {}\nmax-time = 10\nsilent\n",
+        quote(url),
+        quote(body)
+    );
+    process::run_with_stdin_bytes(
+        &ProcessRequest::new("curl").args(["-K", "-"]),
+        config.as_bytes(),
+        &ProcessLimits {
+            timeout: std::time::Duration::from_secs(30),
+            max_stdout_bytes: 16 * 1024,
+            max_stderr_bytes: 16 * 1024,
+        },
+        &CancellationToken::default(),
+    )
+    .is_ok_and(|output| process::error_code(&output.termination).is_none())
+}
+
 #[derive(Debug)]
 pub enum RunError {
     NotEnabled,
@@ -554,6 +668,137 @@ mod tests {
             Err(RunError::NotEnabled)
         ));
         assert!(!called);
+    }
+
+    #[test]
+    fn only_a_failed_run_is_news_and_the_channels_keep_their_gates() {
+        let ok = LastRun {
+            at_unix_secs: 1,
+            results: vec![
+                Outcome {
+                    service: "a".into(),
+                    outcome: "updated".into(),
+                    message: None,
+                },
+                Outcome {
+                    service: "b".into(),
+                    outcome: "skipped".into(),
+                    message: Some("busy".into()),
+                },
+            ],
+        };
+        assert!(failure_summary(&ok).is_none());
+        let bad = LastRun {
+            at_unix_secs: 7,
+            results: vec![Outcome {
+                service: "valkey-9".into(),
+                outcome: "failed".into(),
+                message: Some("did not become healthy".into()),
+            }],
+        };
+        let (text, payload) = failure_summary(&bad).unwrap();
+        assert!(text.contains("valkey-9: did not become healthy"), "{text}");
+        assert_eq!(payload["event"], "service-patch-window");
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notify.conf");
+        std::fs::write(
+            &file,
+            serde_json::json!({"channels": [
+                {"type": "slack", "webhook_url": "https://hooks.example/slack"},
+                {"type": "discord", "webhook_url": "https://hooks.example/discord", "on_failure": true},
+                {"type": "webhook", "webhook_url": "https://hooks.example/plain"},
+                {"type": "slack", "webhook_url": "https://hooks.example/off", "enabled": false},
+                {"type": "slack", "webhook_url": "https://hooks.example/quiet", "on_failure": false},
+                {"type": "slack", "webhook_url": "http://insecure.example/x"},
+                {"type": "slack", "webhook_url": ""},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut posted = Vec::new();
+        let sent = notify_failure(&file, &text, &payload, &mut |url, body| {
+            posted.push((url.to_owned(), body.to_owned()));
+            true
+        });
+        assert_eq!(sent, 3);
+        let urls: Vec<&str> = posted.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://hooks.example/slack",
+                "https://hooks.example/discord",
+                "https://hooks.example/plain"
+            ]
+        );
+        assert!(posted[0].1.contains("\"text\"") && posted[0].1.contains("OrbDen Engine"));
+        assert!(posted[1].1.contains("\"content\""));
+        assert!(posted[2].1.contains("\"event\":\"service-patch-window\""));
+        // A failed post is not counted and nothing else breaks.
+        assert_eq!(notify_failure(&file, &text, &payload, &mut |_, _| false), 0);
+        // No file, no channels.
+        assert_eq!(
+            notify_failure(&dir.path().join("none"), &text, &payload, &mut |_, _| true),
+            0
+        );
+    }
+
+    #[test]
+    fn the_curl_post_sends_the_exact_body_and_keeps_the_address_out_of_argv() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buffer = [0u8; 4096];
+            // Read until the body (Content-Length) has arrived.
+            loop {
+                let n = stream.read(&mut buffer).unwrap();
+                seen.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&seen).into_owned();
+                if let Some(at) = text.find("\r\n\r\n") {
+                    let length = text
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .map(str::to_owned)
+                        })
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if seen.len() >= at + 4 + length {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        // Quotes, a backslash, a newline and a non-ASCII letter survive.
+        let body = r#"{"text":"a \"quoted\" \\ line\nnext é"}"#;
+        assert!(curl_post(
+            &format!("http://127.0.0.1:{port}/hook/secret-token"),
+            body
+        ));
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /hook/secret-token HTTP/1.1"),
+            "{request}"
+        );
+        assert!(
+            request
+                .to_lowercase()
+                .contains("content-type: application/json")
+        );
+        assert!(request.ends_with(body), "{request}");
+        // Nothing listens: a failed post is false, not a panic.
+        assert!(!curl_post("http://127.0.0.1:9/x", "{}"));
     }
 
     #[test]
