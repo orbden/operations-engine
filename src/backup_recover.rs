@@ -16,7 +16,10 @@
 //! A trigger or a deletion leaves no partial output of its own: the agent has
 //! its own lock and cleanup, and a deletion removes one file in one step. For
 //! those the record is closed without claiming what happened (the outcome is
-//! not confirmed), and nothing is removed. The agent's own work is not stopped.
+//! not confirmed), and nothing is removed. The agent's own work is not stopped:
+//! stopping a backup half-way is worse than letting it finish. The result says
+//! whether an agent still holds the backup lock (`agentRunning`), so the
+//! operator knows the run the closed record started may still be going.
 
 use std::path::Path;
 
@@ -122,6 +125,11 @@ pub struct DiscardResult {
     /// False when the transaction was not in progress (already closed).
     pub closed: bool,
     pub files_removed: u32,
+    /// For a closed trigger: whether a process still holds the backup agent's
+    /// lock (its run goes on by itself). `None` when that could not be read
+    /// or the target is not a trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_running: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -212,6 +220,7 @@ pub fn execute(ctx: &Context<'_>, req: &Request) -> Result<DiscardResult, Error>
         return Ok(DiscardResult {
             closed: false,
             files_removed: 0,
+            agent_running: None,
         });
     }
     let files_removed = match &req.target {
@@ -238,10 +247,41 @@ pub fn execute(ctx: &Context<'_>, req: &Request) -> Result<DiscardResult, Error>
         &rel("audit/events.jsonl"),
         &AuditRecord::result(req.interrupted, false, Some(ErrorCode::Cancelled)),
     );
+    let agent_running = matches!(req.target, Target::Trigger)
+        .then(|| ctx.import_root.parent().map(|dir| dir.join(AGENT_LOCK)))
+        .flatten()
+        .and_then(|lock| lock_held_by_a_process(&lock));
     Ok(DiscardResult {
         closed: true,
         files_removed,
+        agent_running,
     })
+}
+
+/// The backup agent's lock file inside the backup root.
+const AGENT_LOCK: &str = ".lock";
+
+/// Whether some process has `path` open (the agent keeps its `flock` on an
+/// open descriptor of it for the whole run). `None` when `/proc` cannot be
+/// read; an unreadable single process is skipped, never counted as "no".
+fn lock_held_by_a_process(path: &Path) -> Option<bool> {
+    let mut readable = false;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        readable = true;
+        for fd in fds.flatten() {
+            if std::fs::read_link(fd.path()).is_ok_and(|target| target == path) {
+                return Some(true);
+            }
+        }
+    }
+    readable.then_some(false)
 }
 
 /// `<database>_<time>.sql.partial-<request id>`: only plain files, only this
@@ -389,7 +429,8 @@ mod tests {
             result,
             DiscardResult {
                 closed: true,
-                files_removed: 1
+                files_removed: 1,
+                agent_running: None,
             }
         );
         let left: Vec<String> = {
@@ -417,7 +458,8 @@ mod tests {
             execute(&fx.ctx(), &database(DB_ID)).unwrap(),
             DiscardResult {
                 closed: false,
-                files_removed: 0
+                files_removed: 0,
+                agent_running: None,
             }
         );
     }
@@ -438,7 +480,8 @@ mod tests {
             result,
             DiscardResult {
                 closed: true,
-                files_removed: 1
+                files_removed: 1,
+                agent_running: None,
             }
         );
         assert!(!own.exists() && finished.exists() && foreign.exists());
@@ -507,7 +550,10 @@ mod tests {
             execute(&fx.ctx(), &trigger_request).unwrap(),
             DiscardResult {
                 closed: true,
-                files_removed: 0
+                files_removed: 0,
+                // Nobody holds the agent's lock file here (`None` where there
+                // is no /proc to ask).
+                agent_running: cfg!(target_os = "linux").then_some(false),
             }
         );
         assert_eq!(fx.status(&trigger, DB_ID), TransactionStatus::Failed);
@@ -524,7 +570,8 @@ mod tests {
             execute(&fx.ctx(), &delete_request).unwrap(),
             DiscardResult {
                 closed: true,
-                files_removed: 0
+                files_removed: 0,
+                agent_running: None,
             }
         );
         assert_eq!(fx.status(&delete, OTHER_ID), TransactionStatus::Failed);
@@ -536,6 +583,29 @@ mod tests {
             execute(&fx.ctx(), &wrong),
             Err(Error::NotFound) | Err(Error::WrongOperation)
         ));
+    }
+
+    #[test]
+    fn a_closed_trigger_says_whether_the_agent_still_holds_its_lock() {
+        let fx = Fixture::new();
+        fx.interrupted("backup-trigger", DB_ID, backup_trigger::OPERATION);
+        // The agent keeps an open descriptor of its lock file for the whole run.
+        let lock_file = fx._dir.path().join("backups/.lock");
+        let held = std::fs::File::create(&lock_file).unwrap();
+        let request = Request::parse(None, false, true, None, DB_ID, HOLDER).unwrap();
+        let result = execute(&fx.ctx(), &request).unwrap();
+        assert_eq!(
+            result.agent_running,
+            cfg!(target_os = "linux").then_some(true),
+            "{result:?}"
+        );
+        // Nothing was stopped: the file and the process side are untouched.
+        assert!(lock_file.exists());
+        drop(held);
+        assert_eq!(
+            lock_held_by_a_process(&lock_file),
+            cfg!(target_os = "linux").then_some(false)
+        );
     }
 
     #[test]
