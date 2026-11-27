@@ -143,6 +143,9 @@ const JOOMLA_INSTALL_SCRIPT: &str = "$e = static fn (string $k): string => (stri
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_ARCHIVE_URL_BYTES: usize = 512;
+/// A Laravel `.env.example` is about 1 KiB; a repository cannot make the
+/// engine read or copy more than this.
+const MAX_ENV_EXAMPLE_BYTES: u64 = 256 * 1024;
 /// Joomla 6's full package holds about 13 400 entries and 90 MiB.
 const ARCHIVE_LIMITS: Limits = Limits {
     max_entries: 50_000,
@@ -658,6 +661,18 @@ impl Error {
     }
 }
 
+/// The project's `.env.example`, refused above [`MAX_ENV_EXAMPLE_BYTES`].
+fn read_env_example(root: &ManagedRoot) -> Result<String, Error> {
+    let path = rel(".env.example")?;
+    let meta = root.symlink_metadata(&path).map_err(Error::Io)?;
+    if meta.len() > MAX_ENV_EXAMPLE_BYTES {
+        return Err(Error::Io(std::io::Error::other(
+            "the repository's .env.example is larger than 256 KiB",
+        )));
+    }
+    root.read_to_string(&path).map_err(Error::Io)
+}
+
 fn rel(value: impl AsRef<Path>) -> Result<SiteRelativePath, Error> {
     SiteRelativePath::parse(value).map_err(|_| Error::RootUnavailable)
 }
@@ -1036,9 +1051,7 @@ fn clone_repository(
     if !is("composer.json", false) || !is(".env.example", false) || !is("public", true) {
         return Err(Error::NotLaravel);
     }
-    let example = staged
-        .read_to_string(&rel(".env.example")?)
-        .map_err(|_| Error::NotLaravel)?;
+    let example = read_env_example(&staged)?;
     staged
         .write_atomic(&rel(".env")?, example.as_bytes())
         .map_err(Error::Io)?;
@@ -1156,9 +1169,34 @@ fn move_into_place(root: &ManagedRoot, staging: &str, docroot: &str) -> Result<(
 
 /// Sets a fixed key set in the application's `.env`, written through the
 /// managed root and kept readable by the site's UID.
+/// Turns the first `# KEY=...` line of each key that has no active `KEY=` line
+/// into `KEY=...`, so the setting takes the place the example file gave it
+/// instead of landing at the end. Other text is untouched.
+fn uncomment_keys<'a>(original: &str, keys: impl Iterator<Item = &'a str>) -> String {
+    let mut lines = original.lines().map(str::to_owned).collect::<Vec<_>>();
+    for key in keys {
+        let prefix = format!("{key}=");
+        if lines.iter().any(|line| line.starts_with(&prefix)) {
+            continue;
+        }
+        if let Some(line) = lines.iter_mut().find(|line| {
+            line.strip_prefix('#')
+                .is_some_and(|rest| rest.trim_start().starts_with(&prefix))
+        }) {
+            *line = line[1..].trim_start().to_owned();
+        }
+    }
+    let mut out = lines.join("\n");
+    if original.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 fn set_env_file(root: &ManagedRoot, req: &Request, updates: &[(&str, &str)]) -> Result<(), Error> {
     let env = rel(".env")?;
     let original = root.read_to_string(&env).map_err(Error::Io)?;
+    let original = uncomment_keys(&original, updates.iter().map(|(key, _)| *key));
     let updated = crate::util::set_env_lines(&original, updates).map_err(Error::Io)?;
     root.write_atomic(&env, updated.as_bytes())
         .map_err(Error::Io)?;
@@ -1252,9 +1290,7 @@ fn setup_laravel(
     let port = db.port.to_string();
     // `--no-scripts` also skipped the script that copies `.env.example`.
     if root.symlink_metadata(&rel(".env")?).is_err() {
-        let example = root
-            .read_to_string(&rel(".env.example")?)
-            .map_err(Error::Io)?;
+        let example = read_env_example(root)?;
         root.write_atomic(&rel(".env")?, example.as_bytes())
             .map_err(Error::Io)?;
     }
@@ -2166,6 +2202,28 @@ exit 0
         let again = f.run(REQUEST_ID, Some("key-1")).unwrap();
         assert_eq!(again.version, first.version);
         assert_eq!(f.calls(), calls);
+    }
+
+    #[test]
+    fn a_commented_key_is_turned_on_in_place() {
+        let on = |text: &str, keys: &[&'static str]| uncomment_keys(text, keys.iter().copied());
+        assert_eq!(on("# DB_HOST=1\nX=1\n", &["DB_HOST"]), "DB_HOST=1\nX=1\n");
+        assert_eq!(on("#DB_HOST=1\n", &["DB_HOST"]), "DB_HOST=1\n");
+        // An active line wins; a note that merely mentions the key stays.
+        assert_eq!(on("#A=0\nA=1\n", &["A"]), "#A=0\nA=1\n");
+        assert_eq!(on("# see A=1 docs\n", &["A"]), "# see A=1 docs\n");
+        assert_eq!(on("# AB=1\n", &["A"]), "# AB=1\n");
+    }
+
+    #[test]
+    fn an_oversized_env_example_is_refused_and_a_normal_one_is_read() {
+        let f = fixture();
+        let root = ManagedRoot::open(&TrustedRoot::parse(&f.site).unwrap()).unwrap();
+        fs::write(f.site.join(".env.example"), "APP_NAME=Laravel\n").unwrap();
+        assert_eq!(read_env_example(&root).unwrap(), "APP_NAME=Laravel\n");
+        let big = vec![b'a'; MAX_ENV_EXAMPLE_BYTES as usize + 1];
+        fs::write(f.site.join(".env.example"), big).unwrap();
+        assert!(matches!(read_env_example(&root), Err(Error::Io(_))));
     }
 
     #[test]
