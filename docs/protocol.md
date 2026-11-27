@@ -1370,6 +1370,19 @@ is `{domain, releaseId, container, network, image, port, health,
 deployedAtUnixSecs}`. The stack and ingress locks are held, and idempotency,
 transaction and audit are as for `node.build`.
 
+Before the route is written the engine publishes the release's hashed client
+files, `dist/client/_astro` of the artifact, to
+`/var/lib/wcp-static/<domain>-assets/_astro` (the directory the ingress mounts
+read-only as `/srv/wcp-static`; files 0644, directories 0755, symlinks and
+hard links refused). The route serves `/_astro/*` from there when the file
+exists and proxies every other request, and any hashed file that is not
+published, to the application, so a missing or stale copy never changes what
+the application answers. A redeploy replaces the copy (staged beside it and
+swapped by renames); `node.removeApp` deletes it. An artifact without that
+directory publishes nothing. A route written by an earlier engine (proxy only)
+is this operation's route too, and `routeManaged` stays `true` for it until the
+next deploy replaces it.
+
 `node app-status --domain <domain>` is read-only: `{domain, state, health,
 restartCount, startedAt, image, releaseId, routeManaged}`. `state` is the
 container state or `absent`; a value the engine could not read is `null`, and a

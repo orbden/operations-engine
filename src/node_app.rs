@@ -58,6 +58,8 @@ pub const REMOVE: &str = "node.removeApp";
 /// The ingress container of the managed stack (also named by
 /// `site.publishStatic`).
 pub const INGRESS_CONTAINER: &str = "wcp-ingress-1";
+/// The host directory the ingress mounts read-only as `/srv/wcp-static`.
+pub const STATIC_ROOT: &str = "/var/lib/wcp-static";
 const LABEL_APP: &str = "wcp.node-app";
 const LABEL_RELEASE: &str = "wcp.node-release";
 const DEFAULT_MEMORY_MB: u32 = 512;
@@ -344,6 +346,8 @@ pub struct Context<'a> {
     /// Host path of the engine state root (bind-mount sources).
     pub state_path: &'a Path,
     pub ingress_root: &'a TrustedRoot,
+    /// The host directory the ingress serves read-only as `/srv/wcp-static`.
+    pub static_root: &'a TrustedRoot,
     pub compose: &'a compose::Access,
     pub docker_program: &'a str,
     pub poll_interval: Duration,
@@ -926,6 +930,74 @@ fn run_args(
     args
 }
 
+/// Publishes the hashed client files of a release (`dist/client/_astro`) for
+/// the ingress to serve directly, as `<static root>/<domain>-assets/_astro`.
+/// A release without that directory publishes nothing. The new copy is staged
+/// next to the live one and swapped in by renames; in the instant between the
+/// two renames a request for a hashed file is not found there and goes to the
+/// application, as it did before assets were published. Returns whether
+/// anything was published.
+fn publish_assets(
+    ctx: &Context<'_>,
+    domain: &Domain,
+    release: &ManagedRoot,
+) -> Result<bool, Error> {
+    let open = |from: &ManagedRoot, name: &str| match from.open_child_dir_nofollow(&rel(name)) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::Io(error)),
+    };
+    let Some(dist) = open(release, "dist")? else {
+        return Ok(false);
+    };
+    let Some(client_dir) = open(&dist, "client")? else {
+        return Ok(false);
+    };
+    let Some(client) = open(&client_dir, "_astro")? else {
+        return Ok(false);
+    };
+    let static_root = ManagedRoot::open(ctx.static_root).map_err(Error::Io)?;
+    let dir = node_ingress::assets_dir_name(domain);
+    let base = rel(&dir);
+    static_root.create_dir_all(&base).map_err(Error::Io)?;
+    static_root.set_mode(&base, 0o755).map_err(Error::Io)?;
+    let assets = static_root.open_managed_dir(&base).map_err(Error::Io)?;
+    let (live, staged, old) = (rel("_astro"), rel("_astro.new"), rel("_astro.old"));
+    for leftover in [&staged, &old] {
+        if assets.symlink_metadata(leftover).is_ok() {
+            assets.remove_dir_all(leftover).map_err(Error::Io)?;
+        }
+    }
+    assets.create_dir(&staged).map_err(Error::Io)?;
+    assets.set_mode(&staged, 0o755).map_err(Error::Io)?;
+    let to = assets.open_managed_dir(&staged).map_err(Error::Io)?;
+    let mut copied = Copied::default();
+    if let Err(error) = copy_tree(
+        &client,
+        &to,
+        &CopyRules {
+            skip: skip_nothing,
+            owner: None,
+            max_entries: ARTIFACT_LIMITS.0,
+            max_bytes: ARTIFACT_LIMITS.1,
+        },
+        0,
+        &mut copied,
+    ) {
+        let _ = assets.remove_dir_all(&staged);
+        return Err(match error {
+            crate::node_build::Error::Io(io) => Error::Io(io),
+            _ => Error::Project("the client files cannot be published"),
+        });
+    }
+    if assets.symlink_metadata(&live).is_ok() {
+        assets.rename(&live, &old).map_err(Error::Io)?;
+    }
+    assets.rename(&staged, &live).map_err(Error::Io)?;
+    let _ = assets.remove_dir_all(&old);
+    Ok(true)
+}
+
 fn deploy_steps(
     ctx: &Context<'_>,
     req: &DeployRequest,
@@ -971,7 +1043,10 @@ fn deploy_steps(
     }
     let wanted = node_ingress::render(domain);
     let previous_route = read_route(ctx, &live)?;
-    if previous_route.as_deref().is_some_and(|text| text != wanted) {
+    if previous_route
+        .as_deref()
+        .is_some_and(|text| !node_ingress::is_managed(domain, text))
+    {
         return Err(Error::Conflict(
             "the domain already has a route that is not managed Node hosting",
         ));
@@ -1144,7 +1219,10 @@ fn deploy_steps(
     }
     wait_healthy(ctx, &container, cancel)?;
 
-    // 5. The route, then proof through the ingress itself.
+    // 5. The hashed client files go where the ingress serves them from, then
+    //    the route, then proof through the ingress itself. A file the ingress
+    //    cannot find there still reaches the application.
+    publish_assets(ctx, domain, &release)?;
     activate_route(ctx, domain, &wanted, previous_route.as_deref())?;
     progress.route_changed = Some(previous_route.clone());
     probe_through_ingress(ctx, domain)?;
@@ -1270,9 +1348,11 @@ fn typed<T: serde::de::DeserializeOwned>(
 pub fn status(ctx: &Context<'_>, domain: &Domain) -> Result<AppStatus, Error> {
     let container = node_ingress::container_name(domain);
     let facts = inspect(ctx, &container)?;
-    let route_managed = read_route(ctx, &route_path(domain))
-        .ok()
-        .map(|route| route.as_deref() == Some(node_ingress::render(domain).as_str()));
+    let route_managed = read_route(ctx, &route_path(domain)).ok().map(|route| {
+        route
+            .as_deref()
+            .is_some_and(|text| node_ingress::is_managed(domain, text))
+    });
     Ok(match facts {
         None => AppStatus {
             domain: domain.to_string(),
@@ -1350,7 +1430,7 @@ pub fn remove(
             // The route first, so no request reaches a container being removed.
             let mut route_removed = false;
             if let Some(route) = read_route(ctx, &route_path(domain))? {
-                if route == node_ingress::render(domain) {
+                if node_ingress::is_managed(domain, &route) {
                     remove_route(ctx, domain, &route)?;
                     route_removed = true;
                 }
@@ -1378,6 +1458,12 @@ pub fn remove(
                 ]),
             );
             docker_quiet(ctx, &argv(&["network", "rm", &network]));
+            if let Ok(static_root) = ManagedRoot::open(ctx.static_root) {
+                let assets = rel(node_ingress::assets_dir_name(domain));
+                if static_root.symlink_metadata(&assets).is_ok() {
+                    static_root.remove_dir_all(&assets).map_err(Error::Io)?;
+                }
+            }
             scope
                 .root
                 .remove_dir_all(&rel("releases"))
@@ -1419,6 +1505,7 @@ mod tests {
         dir: tempfile::TempDir,
         state: PathBuf,
         ingress: TrustedRoot,
+        static_root: TrustedRoot,
         compose: compose::Access,
         docker: String,
     }
@@ -1436,7 +1523,13 @@ mod tests {
         let state = dir.path().join("state");
         let ingress = dir.path().join("ingress");
         let control = dir.path().join("control");
-        for path in [&state, &ingress, &control, &dir.path().join("bin")] {
+        for path in [
+            &state,
+            &ingress,
+            &control,
+            &dir.path().join("bin"),
+            &dir.path().join("static"),
+        ] {
             fs::create_dir(path).unwrap();
         }
         // An artifact of a server build.
@@ -1446,6 +1539,12 @@ mod tests {
         fs::write(artifact.join("package.json"), "{}").unwrap();
         fs::write(artifact.join("package-lock.json"), "{}").unwrap();
         fs::write(artifact.join("dist/server/entry.mjs"), "// entry").unwrap();
+        fs::create_dir_all(artifact.join("dist/client/_astro")).unwrap();
+        fs::write(
+            artifact.join("dist/client/_astro/app.abc123.js"),
+            "// asset",
+        )
+        .unwrap();
         // The ingress container is up.
         fs::write(
             control.join("c-wcp-ingress-1"),
@@ -1518,6 +1617,7 @@ exit 0"#,
         Host {
             state,
             ingress: TrustedRoot::parse(&ingress).unwrap(),
+            static_root: TrustedRoot::parse(dir.path().join("static")).unwrap(),
             compose,
             docker: docker.to_string_lossy().into_owned(),
             dir,
@@ -1550,6 +1650,7 @@ exit 0"#,
                 engine_state: &state,
                 state_path: &self.state,
                 ingress_root: &self.ingress,
+                static_root: &self.static_root,
                 compose: &self.compose,
                 docker_program: &self.docker,
                 poll_interval: Duration::from_millis(5),
@@ -1891,6 +1992,94 @@ exit 0"#,
         // error, never "absent".
         fs::write(&h.docker, "#!/bin/sh\necho boom >&2\nexit 1\n").unwrap();
         assert!(h.run(|ctx| status(ctx, &domain)).is_err());
+    }
+
+    #[test]
+    fn deploy_publishes_the_hashed_client_files_and_remove_deletes_them() {
+        use std::os::unix::fs::PermissionsExt;
+        let h = host();
+        let assets = h.dir.path().join(format!("static/{DOMAIN}-assets"));
+        deploy_with(&h, "", ID, None).unwrap();
+        let file = assets.join("_astro/app.abc123.js");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "// asset");
+        // Readable by the ingress, writable only by the engine.
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(assets.join("_astro"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        // Nothing but the live copy is left behind.
+        let names: Vec<_> = fs::read_dir(&assets)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["_astro"]);
+
+        // A redeploy replaces the copy: the old hashed file is gone.
+        let artifact = h.state.join(format!(
+            "node-build/{}/artifacts/{BUILD}/dist/client/_astro",
+            crate::transaction::resource_lock::canonical_hash(Path::new(ROOT))
+        ));
+        fs::remove_file(artifact.join("app.abc123.js")).unwrap();
+        fs::write(artifact.join("app.def456.js"), "// next").unwrap();
+        deploy_with(&h, "", ID2, None).unwrap();
+        assert!(!file.exists());
+        assert!(assets.join("_astro/app.def456.js").exists());
+
+        let request = DomainRequest::parse(
+            &format!(r#"{{"domain":"{DOMAIN}"}}"#),
+            "123e4567-e89b-12d3-a456-4266141740f0",
+            None,
+        )
+        .unwrap();
+        h.run(|ctx| remove(ctx, &request, &CancellationToken::default()))
+            .unwrap();
+        assert!(!assets.exists());
+    }
+
+    #[test]
+    fn a_build_without_client_assets_publishes_nothing() {
+        let h = host();
+        let artifact = h.state.join(format!(
+            "node-build/{}/artifacts/{BUILD}/dist/client",
+            crate::transaction::resource_lock::canonical_hash(Path::new(ROOT))
+        ));
+        fs::remove_dir_all(artifact).unwrap();
+        deploy_with(&h, "", ID, None).unwrap();
+        assert!(
+            !h.dir
+                .path()
+                .join(format!("static/{DOMAIN}-assets"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn a_host_still_on_the_proxy_only_route_is_adopted_by_the_next_deploy() {
+        let h = host();
+        let domain = Domain::parse(DOMAIN).unwrap();
+        let legacy = node_ingress::render_legacy(&domain);
+        fs::write(
+            h.dir.path().join(format!("ingress/{DOMAIN}.caddyfile")),
+            &legacy,
+        )
+        .unwrap();
+        assert_eq!(
+            h.run(|ctx| status(ctx, &domain)).unwrap().route_managed,
+            Some(true)
+        );
+        deploy_with(&h, "", ID, None).unwrap();
+        assert_eq!(
+            h.route().as_deref(),
+            Some(node_ingress::render(&domain).as_str())
+        );
     }
 
     #[test]

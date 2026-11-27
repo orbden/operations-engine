@@ -223,10 +223,20 @@ fn with_host<T: serde::Serialize>(
         };
     }
     let compose = crate::compose::Access::default();
+    // The directory the ingress serves read-only as `/srv/wcp-static`; it may
+    // not exist before the first publish of any kind.
+    let static_dir = std::path::Path::new(node_app::STATIC_ROOT);
+    if std::fs::create_dir_all(static_dir).is_err() {
+        return fail(ErrorCode::Internal, "the static root is unavailable");
+    }
+    let Ok(static_root) = crate::site::TrustedRoot::parse(static_dir) else {
+        return fail(ErrorCode::Internal, "the static root is unavailable");
+    };
     let context = node_app::Context {
         engine_state: &state,
         state_path: config.state_root.as_path(),
         ingress_root: &config.ingress_root,
+        static_root: &static_root,
         compose: &compose,
         docker_program: "docker",
         poll_interval: std::time::Duration::from_secs(2),
