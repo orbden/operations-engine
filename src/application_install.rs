@@ -146,6 +146,10 @@ const MAX_ARCHIVE_URL_BYTES: usize = 512;
 /// A Laravel `.env.example` is about 1 KiB; a repository cannot make the
 /// engine read or copy more than this.
 const MAX_ENV_EXAMPLE_BYTES: u64 = 256 * 1024;
+/// A cloned Laravel project (without `.git` and `vendor/`) this large is not
+/// a project to install: the clone is refused before Composer runs.
+const MAX_CLONE_ENTRIES: usize = 20_000;
+const MAX_CLONE_BYTES: u64 = 256 * 1024 * 1024;
 /// Joomla 6's full package holds about 13 400 entries and 90 MiB.
 const ARCHIVE_LIMITS: Limits = Limits {
     max_entries: 50_000,
@@ -565,6 +569,11 @@ pub enum Error {
     CloneFailed(ErrorCode),
     /// The cloned repository is not a Laravel project.
     NotLaravel,
+    /// The cloned repository holds more files or bytes than an install takes.
+    CloneTooLarge,
+    /// The repository has its own `public/.user.ini`; the site's PHP settings
+    /// are managed by the panel.
+    RepositoryUserIni,
     ArchiveFetch(ErrorCode),
     /// The downloaded archive does not hash to its pinned SHA-256.
     ArchiveDigest,
@@ -626,6 +635,14 @@ impl Error {
             Self::NotLaravel => (
                 ErrorCode::InvalidInput,
                 "the repository is not a Laravel project (it needs composer.json, .env.example, public/ and laravel/framework)".into(),
+            ),
+            Self::CloneTooLarge => (
+                ErrorCode::InvalidInput,
+                "the repository is larger than an install takes (20000 files or 256 MiB without .git and vendor)".into(),
+            ),
+            Self::RepositoryUserIni => (
+                ErrorCode::InvalidInput,
+                "the repository has a public/.user.ini; the site's PHP settings are managed by the panel, so remove that file from the repository".into(),
             ),
             Self::ArchiveFetch(code) => (
                 *code,
@@ -1051,6 +1068,14 @@ fn clone_repository(
     if !is("composer.json", false) || !is(".env.example", false) || !is("public", true) {
         return Err(Error::NotLaravel);
     }
+    let public = staged
+        .open_child_dir_nofollow(&rel("public")?)
+        .map_err(Error::Io)?;
+    if public.symlink_metadata(&rel(".user.ini")?).is_ok() {
+        return Err(Error::RepositoryUserIni);
+    }
+    let (mut entries, mut bytes) = (MAX_CLONE_ENTRIES, MAX_CLONE_BYTES);
+    within_limits(&staged, &mut entries, &mut bytes, 0)?;
     let example = read_env_example(&staged)?;
     staged
         .write_atomic(&rel(".env")?, example.as_bytes())
@@ -1074,6 +1099,34 @@ fn clone_repository(
         cancel,
     )?;
     locked_version(&staged, Application::Laravel).map_err(|_| Error::NotLaravel)?;
+    Ok(())
+}
+
+/// Counts the tree below `dir` against what is left of the limits; a link
+/// is counted as an entry and never followed.
+fn within_limits(
+    dir: &ManagedRoot,
+    entries: &mut usize,
+    bytes: &mut u64,
+    depth: usize,
+) -> Result<(), Error> {
+    if depth > 64 {
+        return Err(Error::CloneTooLarge);
+    }
+    let children = dir
+        .child_entries_bounded(*entries)
+        .map_err(|_| Error::CloneTooLarge)?;
+    for child in children {
+        *entries = entries.checked_sub(1).ok_or(Error::CloneTooLarge)?;
+        let path = rel(&child.name)?;
+        if child.is_dir {
+            let inner = dir.open_child_dir_nofollow(&path).map_err(Error::Io)?;
+            within_limits(&inner, entries, bytes, depth + 1)?;
+        } else {
+            let size = dir.symlink_metadata(&path).map_err(Error::Io)?.len();
+            *bytes = bytes.checked_sub(size).ok_or(Error::CloneTooLarge)?;
+        }
+    }
     Ok(())
 }
 
@@ -1167,8 +1220,6 @@ fn move_into_place(root: &ManagedRoot, staging: &str, docroot: &str) -> Result<(
     Ok(())
 }
 
-/// Sets a fixed key set in the application's `.env`, written through the
-/// managed root and kept readable by the site's UID.
 /// Turns the first `# KEY=...` line of each key that has no active `KEY=` line
 /// into `KEY=...`, so the setting takes the place the example file gave it
 /// instead of landing at the end. Other text is untouched.
@@ -1193,6 +1244,8 @@ fn uncomment_keys<'a>(original: &str, keys: impl Iterator<Item = &'a str>) -> St
     out
 }
 
+/// Sets a fixed key set in the application's `.env`, written through the
+/// managed root and kept readable by the site's UID.
 fn set_env_file(root: &ManagedRoot, req: &Request, updates: &[(&str, &str)]) -> Result<(), Error> {
     let env = rel(".env")?;
     let original = root.read_to_string(&env).map_err(Error::Io)?;
@@ -2876,6 +2929,27 @@ exit 0
     }
 
     #[test]
+    fn git_source_with_a_linked_env_example_or_bootstrap_cache_is_refused_and_undone() {
+        // `.env.example` as a link to a file outside the project.
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        let repo_dir = f.dir.path().join("repo");
+        fs::write(f.dir.path().join("outside"), "SECRET=1").unwrap();
+        fs::remove_file(repo_dir.join(".env.example")).unwrap();
+        std::os::unix::fs::symlink(f.dir.path().join("outside"), repo_dir.join(".env.example"))
+            .unwrap();
+        assert_refused_and_undone(&f);
+
+        // `bootstrap/cache` as a link to a directory.
+        let g = fixture();
+        repo(&g, LARAVEL_LOCK, true);
+        fs::create_dir_all(g.dir.path().join("repo/bootstrap")).unwrap();
+        std::os::unix::fs::symlink(g.dir.path(), g.dir.path().join("repo/bootstrap/cache"))
+            .unwrap();
+        assert_refused_and_undone(&g);
+    }
+
+    #[test]
     fn git_source_ignores_committed_env_and_vendor() {
         let f = fixture();
         repo(&f, LARAVEL_LOCK, true);
@@ -2888,6 +2962,60 @@ exit 0
         let env = fs::read_to_string(f.site.join(".env")).unwrap();
         assert!(!env.contains("committed-secret"), "{env}");
         assert_eq!(f.names("vendor"), ["autoload.php"]);
+    }
+
+    #[test]
+    fn git_source_with_its_own_user_ini_is_refused_with_a_clear_reason() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        fs::write(
+            f.dir.path().join("repo/public/.user.ini"),
+            "memory_limit=1G",
+        )
+        .unwrap();
+        let error = f
+            .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap_err();
+        assert!(matches!(error, Error::RepositoryUserIni), "{error:?}");
+        assert!(error.protocol().1.contains("public/.user.ini"));
+        assert_eq!(f.names("public"), [".user.ini"]);
+        assert_eq!(f.names(""), ["public"]);
+    }
+
+    #[test]
+    fn a_repository_over_the_limits_is_refused_before_composer_and_undone() {
+        let f = fixture();
+        repo(&f, LARAVEL_LOCK, true);
+        let many = f.dir.path().join("repo/many");
+        fs::create_dir_all(&many).unwrap();
+        for i in 0..MAX_CLONE_ENTRIES {
+            fs::write(many.join(format!("f{i}")), "").unwrap();
+        }
+        let error = f
+            .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+            .unwrap_err();
+        assert!(matches!(error, Error::CloneTooLarge), "{error:?}");
+        assert!(!f.calls().contains("composer"), "{}", f.calls());
+        assert_eq!(f.names(""), ["public"]);
+    }
+
+    #[test]
+    fn the_size_check_counts_bytes_and_entries_and_never_follows_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ManagedRoot::open(&TrustedRoot::parse(dir.path()).unwrap()).unwrap();
+        fs::create_dir(dir.path().join("a")).unwrap();
+        fs::write(dir.path().join("a/one"), vec![0u8; 100]).unwrap();
+        fs::write(dir.path().join("two"), vec![0u8; 50]).unwrap();
+        std::os::unix::fs::symlink("/", dir.path().join("link")).unwrap();
+        // 4 entries (a, a/one, two, link) and 150 bytes plus the link itself.
+        let ok = |entries, bytes| {
+            let (mut e, mut b) = (entries, bytes);
+            within_limits(&root, &mut e, &mut b, 0).is_ok()
+        };
+        assert!(ok(4, 10_000));
+        assert!(!ok(3, 10_000));
+        assert!(!ok(100, 100));
+        assert!(ok(100, 150 + 4096));
     }
 
     #[test]
