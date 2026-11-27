@@ -1370,18 +1370,23 @@ is `{domain, releaseId, container, network, image, port, health,
 deployedAtUnixSecs}`. The stack and ingress locks are held, and idempotency,
 transaction and audit are as for `node.build`.
 
-Before the route is written the engine publishes the release's hashed client
-files, `dist/client/_astro` of the artifact, to
-`/var/lib/wcp-static/<domain>-assets/_astro` (the directory the ingress mounts
-read-only as `/srv/wcp-static`; files 0644, directories 0755, symlinks and
-hard links refused). The route serves `/_astro/*` from there when the file
-exists and proxies every other request, and any hashed file that is not
-published, to the application, so a missing or stale copy never changes what
-the application answers. A redeploy replaces the copy (staged beside it and
-swapped by renames); `node.removeApp` deletes it. An artifact without that
-directory publishes nothing. A route written by an earlier engine (proxy only)
-is this operation's route too, and `routeManaged` stays `true` for it until the
-next deploy replaces it.
+Before the route is written the engine publishes the build's client files,
+`dist/client` of the artifact, to `/var/lib/wcp-static/<domain>-assets/` (the
+directory the ingress mounts read-only as `/srv/wcp-static`; files 0644,
+directories 0755, symlinks and hard links refused). Pages and sources are left
+out: dot files and names ending `.html`, `.htm`, `.php`, `.phtml`, `.mjs`,
+`.cjs`, `.map`, `.sql`, `.sh`, `.env`. The route serves a request from there
+when a file with that exact path exists, `/_astro/*` with the immutable cache
+header and the rest (`favicon`, `robots.txt`, images) with `max-age=3600`, and
+proxies every other request, and any file that is not published, to the
+application, so a missing or stale copy never changes what the application
+answers. A redeploy replaces the copy (staged beside it and swapped by
+renames) but keeps the hashed `_astro/` files of the previous copy that are
+younger than 30 days, so a page cached before the deploy still finds them;
+`node.removeApp` deletes the copy. An artifact without `dist/client`
+publishes nothing. A route written by an earlier engine (proxy only, or only
+`/_astro/*` served) is this operation's route too, and `routeManaged` stays
+`true` for it until the next deploy replaces it.
 
 `node app-status --domain <domain>` is read-only: `{domain, state, health,
 restartCount, startedAt, image, releaseId, routeManaged}`. `state` is the

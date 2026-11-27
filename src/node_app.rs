@@ -930,13 +930,30 @@ fn run_args(
     args
 }
 
-/// Publishes the hashed client files of a release (`dist/client/_astro`) for
-/// the ingress to serve directly, as `<static root>/<domain>-assets/_astro`.
-/// A release without that directory publishes nothing. The new copy is staged
-/// next to the live one and swapped in by renames; in the instant between the
-/// two renames a request for a hashed file is not found there and goes to the
-/// application, as it did before assets were published. Returns whether
-/// anything was published.
+/// How long the hashed files of an earlier release stay published: a page
+/// cached by a browser still points at them.
+const KEEP_HASHED: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// Names the published copy leaves out: dot files, pages (the application
+/// renders those) and anything executable or source-like that has no place in
+/// a public file tree.
+fn not_published(name: &str) -> bool {
+    name.starts_with('.')
+        || [
+            ".html", ".htm", ".php", ".phtml", ".mjs", ".cjs", ".map", ".sql", ".sh", ".env",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+}
+
+/// Publishes the build's client files (`dist/client`) for the ingress to
+/// serve directly, as `<static root>/<domain>-assets/`. The copy is staged
+/// beside the live one and swapped in by renames; between the two renames a
+/// request for a published file is not found there and goes to the
+/// application. The hashed files (`_astro/`) of the previous copy that are
+/// newer than [`KEEP_HASHED`] are carried over, so a page cached before the
+/// deploy still finds its files. A release without `dist/client` publishes
+/// nothing. Returns whether anything was published.
 fn publish_assets(
     ctx: &Context<'_>,
     domain: &Domain,
@@ -950,33 +967,30 @@ fn publish_assets(
     let Some(dist) = open(release, "dist")? else {
         return Ok(false);
     };
-    let Some(client_dir) = open(&dist, "client")? else {
-        return Ok(false);
-    };
-    let Some(client) = open(&client_dir, "_astro")? else {
+    let Some(client) = open(&dist, "client")? else {
         return Ok(false);
     };
     let static_root = ManagedRoot::open(ctx.static_root).map_err(Error::Io)?;
-    let dir = node_ingress::assets_dir_name(domain);
-    let base = rel(&dir);
-    static_root.create_dir_all(&base).map_err(Error::Io)?;
-    static_root.set_mode(&base, 0o755).map_err(Error::Io)?;
-    let assets = static_root.open_managed_dir(&base).map_err(Error::Io)?;
-    let (live, staged, old) = (rel("_astro"), rel("_astro.new"), rel("_astro.old"));
+    let name = node_ingress::assets_dir_name(domain);
+    let (live, staged, old) = (
+        rel(&name),
+        rel(format!("{name}.new")),
+        rel(format!("{name}.old")),
+    );
     for leftover in [&staged, &old] {
-        if assets.symlink_metadata(leftover).is_ok() {
-            assets.remove_dir_all(leftover).map_err(Error::Io)?;
+        if static_root.symlink_metadata(leftover).is_ok() {
+            static_root.remove_dir_all(leftover).map_err(Error::Io)?;
         }
     }
-    assets.create_dir(&staged).map_err(Error::Io)?;
-    assets.set_mode(&staged, 0o755).map_err(Error::Io)?;
-    let to = assets.open_managed_dir(&staged).map_err(Error::Io)?;
+    static_root.create_dir(&staged).map_err(Error::Io)?;
+    static_root.set_mode(&staged, 0o755).map_err(Error::Io)?;
+    let to = static_root.open_managed_dir(&staged).map_err(Error::Io)?;
     let mut copied = Copied::default();
     if let Err(error) = copy_tree(
         &client,
         &to,
         &CopyRules {
-            skip: skip_nothing,
+            skip: not_published,
             owner: None,
             max_entries: ARTIFACT_LIMITS.0,
             max_bytes: ARTIFACT_LIMITS.1,
@@ -984,18 +998,70 @@ fn publish_assets(
         0,
         &mut copied,
     ) {
-        let _ = assets.remove_dir_all(&staged);
+        let _ = static_root.remove_dir_all(&staged);
         return Err(match error {
             crate::node_build::Error::Io(io) => Error::Io(io),
             _ => Error::Project("the client files cannot be published"),
         });
     }
-    if assets.symlink_metadata(&live).is_ok() {
-        assets.rename(&live, &old).map_err(Error::Io)?;
+    if let Ok(Some(previous)) = open_existing(&static_root, &live) {
+        carry_hashed(&previous, &to);
     }
-    assets.rename(&staged, &live).map_err(Error::Io)?;
-    let _ = assets.remove_dir_all(&old);
+    if static_root.symlink_metadata(&live).is_ok() {
+        static_root.rename(&live, &old).map_err(Error::Io)?;
+    }
+    static_root.rename(&staged, &live).map_err(Error::Io)?;
+    let _ = static_root.remove_dir_all(&old);
     Ok(true)
+}
+
+fn open_existing(
+    root: &ManagedRoot,
+    name: &SiteRelativePath,
+) -> Result<Option<ManagedRoot>, io::Error> {
+    match root.open_managed_dir(name) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Moves the hashed files of the previous copy that the new one does not have
+/// and that are younger than [`KEEP_HASHED`] into the new copy. Best effort:
+/// a file that cannot be moved is simply not kept.
+fn carry_hashed(previous: &ManagedRoot, to: &ManagedRoot) {
+    let astro = rel("_astro");
+    let Ok(Some(from_dir)) = open_existing(previous, &astro) else {
+        return;
+    };
+    if !to.exists(&astro) {
+        if to.create_dir(&astro).is_err() || to.set_mode(&astro, 0o755).is_err() {
+            return;
+        }
+    }
+    let Ok(Some(to_dir)) = open_existing(to, &astro) else {
+        return;
+    };
+    let Ok(children) = from_dir.child_entries_bounded(ARTIFACT_LIMITS.0) else {
+        return;
+    };
+    for child in children.into_iter().filter(|c| !c.is_dir) {
+        let Some(file) = child
+            .name
+            .to_str()
+            .and_then(|n| SiteRelativePath::parse(n).ok())
+        else {
+            continue;
+        };
+        let young = from_dir
+            .modified(&file)
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age < KEEP_HASHED);
+        if young && to_dir.symlink_metadata(&file).is_err() {
+            let _ = from_dir.rename_to(&file, &to_dir, &file);
+        }
+    }
 }
 
 fn deploy_steps(
@@ -1459,9 +1525,11 @@ pub fn remove(
             );
             docker_quiet(ctx, &argv(&["network", "rm", &network]));
             if let Ok(static_root) = ManagedRoot::open(ctx.static_root) {
-                let assets = rel(node_ingress::assets_dir_name(domain));
-                if static_root.symlink_metadata(&assets).is_ok() {
-                    static_root.remove_dir_all(&assets).map_err(Error::Io)?;
+                for suffix in ["", ".new", ".old"] {
+                    let path = rel(format!("{}{suffix}", node_ingress::assets_dir_name(domain)));
+                    if static_root.symlink_metadata(&path).is_ok() {
+                        static_root.remove_dir_all(&path).map_err(Error::Io)?;
+                    }
                 }
             }
             scope
@@ -2022,7 +2090,8 @@ exit 0"#,
             .collect();
         assert_eq!(names, ["_astro"]);
 
-        // A redeploy replaces the copy: the old hashed file is gone.
+        // A redeploy publishes the new files and keeps the previous hashed
+        // one (a page cached before the deploy still points at it).
         let artifact = h.state.join(format!(
             "node-build/{}/artifacts/{BUILD}/dist/client/_astro",
             crate::transaction::resource_lock::canonical_hash(Path::new(ROOT))
@@ -2030,7 +2099,7 @@ exit 0"#,
         fs::remove_file(artifact.join("app.abc123.js")).unwrap();
         fs::write(artifact.join("app.def456.js"), "// next").unwrap();
         deploy_with(&h, "", ID2, None).unwrap();
-        assert!(!file.exists());
+        assert!(file.exists(), "the previous hashed file was dropped");
         assert!(assets.join("_astro/app.def456.js").exists());
 
         let request = DomainRequest::parse(
@@ -2042,6 +2111,73 @@ exit 0"#,
         h.run(|ctx| remove(ctx, &request, &CancellationToken::default()))
             .unwrap();
         assert!(!assets.exists());
+    }
+
+    #[test]
+    fn plain_client_files_are_published_pages_and_sources_are_not() {
+        let h = host();
+        let client = h.state.join(format!(
+            "node-build/{}/artifacts/{BUILD}/dist/client",
+            crate::transaction::resource_lock::canonical_hash(Path::new(ROOT))
+        ));
+        fs::write(client.join("robots.txt"), "User-agent: *").unwrap();
+        fs::write(client.join("favicon.svg"), "<svg/>").unwrap();
+        fs::create_dir_all(client.join("img")).unwrap();
+        fs::write(client.join("img/logo.png"), "png").unwrap();
+        for hidden in [
+            "index.html",
+            "about.htm",
+            "x.php",
+            "x.mjs",
+            "app.js.map",
+            ".secret",
+            ".env",
+        ] {
+            fs::write(client.join(hidden), "no").unwrap();
+        }
+        deploy_with(&h, "", ID, None).unwrap();
+        let assets = h.dir.path().join(format!("static/{DOMAIN}-assets"));
+        for published in [
+            "robots.txt",
+            "favicon.svg",
+            "img/logo.png",
+            "_astro/app.abc123.js",
+        ] {
+            assert!(assets.join(published).is_file(), "{published}");
+        }
+        for hidden in [
+            "index.html",
+            "about.htm",
+            "x.php",
+            "x.mjs",
+            "app.js.map",
+            ".secret",
+            ".env",
+        ] {
+            assert!(!assets.join(hidden).exists(), "{hidden}");
+        }
+    }
+
+    #[test]
+    fn a_hashed_file_older_than_the_keep_time_is_dropped_on_the_next_deploy() {
+        let h = host();
+        deploy_with(&h, "", ID, None).unwrap();
+        let astro = h.dir.path().join(format!("static/{DOMAIN}-assets/_astro"));
+        let old = astro.join("app.old000.js");
+        let young = astro.join("app.young0.js");
+        fs::write(&old, "old").unwrap();
+        fs::write(&young, "young").unwrap();
+        let long_ago = std::time::SystemTime::now() - KEEP_HASHED - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        deploy_with(&h, "", ID2, None).unwrap();
+        assert!(!old.exists(), "a file past the keep time stays published");
+        assert!(young.exists(), "a recent file was dropped");
+        assert!(astro.join("app.abc123.js").exists());
     }
 
     #[test]
