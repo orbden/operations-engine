@@ -91,10 +91,12 @@ pub(crate) fn site_run_script(uid: u32, gid: u32, container_dir: &str) -> String
 }
 
 /// Ported from the panel's `build_site_open_basedir_ini`; the allowed
-/// directory is the site's project root, not its document root.
+/// directory is the site's project root, not its document root, and the data
+/// directory beside it (`<project root>-data`, see `validate_project_root`:
+/// no site's root can be that name).
 pub(crate) fn site_open_basedir_ini(project_root: &str) -> String {
     format!(
-        "; Managed by OrbDen - do not edit manually\nopen_basedir = {project_root}:/tmp:/var/tmp:/run/valkey/valkey.sock\n"
+        "; Managed by OrbDen - do not edit manually\nopen_basedir = {project_root}:{project_root}-data:/tmp:/var/tmp:/run/valkey/valkey.sock\n"
     )
 }
 
