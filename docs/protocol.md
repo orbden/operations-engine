@@ -1123,6 +1123,16 @@ outcome, message?}]}` with `outcome` one of `updated`, `alreadyCurrent`,
 `skipped`, `failed`. Nothing new enters the window by itself: a newer image
 needs a new approval.
 
+A run with a `failed` target is also told to the webhook channels the agents
+use, from the engine itself, so it reaches the owner with the panel closed: it
+reads `/root/.wcp/notify.conf` (written by the panel), skips channels that are
+disabled, have `on_failure` false or are not `https://`, and posts the same
+bodies as the agents (Slack `text`, Discord `content`, otherwise
+`{"event":"service-patch-window","status":"failed",...}`) with names and the
+engine's short reasons only. The address and body go to `curl` on stdin, never
+in an argument. Delivery is best effort: a missing file or a failed post
+changes nothing about the run.
+
 `runtime patch-window-status` is read-only: `{configured, window, timerInstalled}`
 with the stored settings, targets, blocked images and the last run.
 
