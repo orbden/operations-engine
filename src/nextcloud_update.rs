@@ -47,6 +47,7 @@ use crate::{
     pinned_download,
     process::{self, CancellationToken, ProcessLimits, ProcessRequest},
     site::{SiteRelativePath, TrustedRoot},
+    tar_extract,
     transaction::{
         IdempotencyKey, RequestId,
         audit::{self, AuditRecord},
@@ -71,6 +72,11 @@ const BUNDLES_DIR: &str = "nextcloud-updates";
 /// of a request that died is removed by the next update of the project.
 const STAGING_PREFIX: &str = ".wcp-nc-update-";
 /// What stays of the site when the code is replaced.
+/// A code directory with a few apps is about 35 000 entries and 800 MB.
+const EXTRACT_LIMITS: tar_extract::Limits = tar_extract::Limits {
+    max_entries: 500_000,
+    max_file_bytes: 4 * 1024 * 1024 * 1024,
+};
 const KEEP: [&str; 4] = ["config", "custom_apps", "themes", ".user.ini"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -433,12 +439,32 @@ fn rel(path: impl AsRef<Path>) -> SiteRelativePath {
 
 // ── Reading the project ───────────────────────────────────────────────────
 
-/// A regular file (never a symlink) of bounded size, as text.
-fn read_text(path: &Path, max: u64) -> Option<String> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    (meta.is_file() && meta.len() <= max)
-        .then(|| std::fs::read_to_string(path).ok())
-        .flatten()
+/// `config/config.php` of the code directory, read through the open
+/// directory (no path is followed): a regular file of bounded size.
+fn read_config(doc: &ManagedRoot) -> Result<String, Error> {
+    let path = rel("config/config.php");
+    let regular = doc
+        .symlink_metadata(&path)
+        .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONFIG_BYTES);
+    if !regular {
+        return Err(Error::NotNextcloud);
+    }
+    doc.read_to_string(&path).map_err(|_| Error::NotNextcloud)
+}
+
+/// The code directory of the site as an open directory: a real directory
+/// directly below the project, never a symlink a tenant swapped in.
+fn open_code_dir(project: &ManagedRoot, name: &str) -> Result<ManagedRoot, Error> {
+    project
+        .open_child_dir_nofollow(&rel(name))
+        .map_err(|_| Error::NotNextcloud)
+}
+
+fn open_project(req: &Request) -> Result<ManagedRoot, Error> {
+    TrustedRoot::parse(&req.project_root)
+        .ok()
+        .and_then(|root| ManagedRoot::open(&root).ok())
+        .ok_or(Error::NotNextcloud)
 }
 
 /// The raw text of a top-level `'key' => value,` line of `config.php` (the
@@ -659,6 +685,12 @@ fn tar_bundle(
     dir: &str,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
+    // `tar -C` follows a link: refuse one (the preflight opened the directory
+    // without following; this keeps the window to the tar start only, and the
+    // bundle is root-only).
+    if !std::fs::symlink_metadata(req.base.root()).is_ok_and(|meta| meta.is_dir()) {
+        return Err(Error::BundleFailed);
+    }
     let file = ctx
         .backup_root
         .create_new_file(&rel(format!("{dir}/files.tar.gz")))
@@ -949,9 +981,11 @@ fn apply(
 /// is verified (checksums, readable archive) before anything is removed.
 fn rollback(
     ctx: &Context<'_>,
-    base: &drupal_action::Request,
+    req: &Request,
+    project: &ManagedRoot,
     id: RequestId,
 ) -> Result<Manifest, Error> {
+    let base = &req.base;
     let cancel = CancellationToken::default();
     let dir = format!("{BUNDLES_DIR}/{id}");
     let manifest: Manifest = serde_json::from_str(
@@ -989,46 +1023,45 @@ fn rollback(
         return Err(Error::BundleCorrupt);
     }
 
+    // The code directory is opened once, without following a link, and
+    // everything below goes through that descriptor: a tenant cannot swap the
+    // directory for a link and have this (root) process empty or fill another
+    // tree.
+    let doc = open_code_dir(project, &req.docroot_name)?;
     record(ctx, id, Step::RollbackStarted);
     // Files: empty the code directory (links are removed, never followed),
-    // then extract.
-    for entry in std::fs::read_dir(base.root()).map_err(Error::Io)? {
-        let entry = entry.map_err(Error::Io)?;
-        let path = entry.path();
-        if entry.file_type().map_err(Error::Io)?.is_dir() {
-            std::fs::remove_dir_all(&path).map_err(Error::Io)?;
+    // then extract the bundle into it.
+    for entry in doc.child_entries().map_err(Error::Io)? {
+        let path = rel(&entry.name);
+        if entry.is_dir {
+            doc.remove_dir_all(&path)
         } else {
-            std::fs::remove_file(&path).map_err(Error::Io)?;
+            doc.remove_file(&path)
         }
+        .map_err(Error::Io)?;
     }
     let archive = ctx
         .backup_root
         .open_regular_read(&rel(format!("{dir}/files.tar.gz")))
         .map_err(Error::Io)?;
-    let extracted = process::run_with_stdin_handle(
-        &ProcessRequest::new(ctx.tar_program).args([
-            "-C".to_owned(),
-            base.root().display().to_string(),
-            "-xzpf".into(),
-            "-".into(),
-            "--numeric-owner".into(),
-        ]),
-        archive,
-        &limits,
-        &cancel,
+    tar_extract::extract(
+        flate2::read::GzDecoder::new(std::io::BufReader::new(archive)),
+        &doc,
+        EXTRACT_LIMITS,
     )
-    .map_err(Error::Run)?;
-    if !exited_ok(&extracted) {
-        return Err(Error::RecoveryRequired(
-            "the files could not be extracted".into(),
-        ));
-    }
+    .map_err(|_| Error::RecoveryRequired("the files could not be extracted".into()))?;
+    // Ownership is not archived by the extractor: the whole tree is the site's.
+    crate::permissions::execute::repair_open_directory(
+        &doc.try_clone_fd().map_err(Error::Io)?,
+        req.uid,
+        req.gid,
+        &[],
+    )
+    .map_err(|_| Error::RecoveryRequired("the files could not be given back to the site".into()))?;
 
     record(ctx, id, Step::FilesRestored);
     // Database: the restored config.php names the connection.
-    let config = read_text(&base.root().join("config/config.php"), MAX_CONFIG_BYTES)
-        .ok_or(Error::NotNextcloud)?;
-    let connection = db_connection(&config)?;
+    let connection = db_connection(&read_config(&doc)?)?;
     update_db::empty_database(ctx.docker_program, &connection, &limits, &cancel).map_err(
         |error| match error {
             update_db::DbError::Run(error) => Error::Run(error),
@@ -1078,7 +1111,8 @@ mod reconcile {
     //! unpacked release it left beside the site is removed.
 
     use super::{
-        BUNDLES_DIR, CORE, Context, Error, Manifest, RESTORE, STAGING_PREFIX, rel, rollback, steps,
+        BUNDLES_DIR, CORE, Context, Error, Manifest, RESTORE, Request, STAGING_PREFIX, rel,
+        rollback, steps,
     };
     use crate::{
         drupal_action,
@@ -1097,14 +1131,14 @@ mod reconcile {
 
     pub(super) fn reconcile(
         ctx: &Context<'_>,
-        base: &drupal_action::Request,
+        req: &Request,
         project: &ManagedRoot,
         scope: &ManagedRoot,
         current: RequestId,
         leave: Option<RequestId>,
     ) -> Result<(), Error> {
-        for id in incomplete(ctx, base, scope, current, leave) {
-            rollback(ctx, base, id).map_err(|error| {
+        for id in incomplete(ctx, &req.base, scope, current, leave) {
+            rollback(ctx, req, project, id).map_err(|error| {
                 Error::RecoveryRequired(format!(
                     "an earlier update was interrupted and rolling it back failed ({}); its \
                      recovery bundle {id} is kept",
@@ -1235,9 +1269,10 @@ fn run(
     scope: &ManagedRoot,
     cancel: &CancellationToken,
 ) -> Result<UpdateResult, Error> {
+    let project = open_project(req)?;
     if req.kind == Kind::Restore {
         let id = req.recovery_id.unwrap();
-        let manifest = rollback(ctx, &req.base, id)?;
+        let manifest = rollback(ctx, req, &project, id)?;
         return Ok(UpdateResult {
             outcome: "restored".into(),
             recovery_id: id.to_string(),
@@ -1248,21 +1283,21 @@ fn run(
         });
     }
 
-    // Preflight: nothing is changed until all of this holds.
+    // Preflight: nothing is changed until all of this holds. The code
+    // directory is read through one open descriptor.
     let docroot = req.base.root();
+    let doc = open_code_dir(&project, &req.docroot_name)?;
     for file in ["occ", "version.php"] {
-        if !std::fs::symlink_metadata(docroot.join(file)).is_ok_and(|meta| meta.is_file()) {
+        if !doc
+            .symlink_metadata(&rel(file))
+            .is_ok_and(|meta| meta.is_file())
+        {
             return Err(Error::NotNextcloud);
         }
     }
-    let config = read_text(&docroot.join("config/config.php"), MAX_CONFIG_BYTES)
-        .ok_or(Error::NotNextcloud)?;
+    let config = read_config(&doc)?;
     let connection = db_connection(&config)?;
     data_dir_outside(&config, docroot)?;
-    let project = TrustedRoot::parse(&req.project_root)
-        .ok()
-        .and_then(|root| ManagedRoot::open(&root).ok())
-        .ok_or(Error::NotNextcloud)?;
     let installed =
         install::version(&project, &req.docroot_name).map_err(|_| Error::VersionUnreadable)?;
     let status = read_status(ctx, &req.base, cancel).ok_or(Error::StatusUnclear)?;
@@ -1302,7 +1337,7 @@ fn run(
                 })
             }
             Err(reason) => {
-                rollback(ctx, &req.base, req.request_id).map_err(|error| {
+                rollback(ctx, req, &project, req.request_id).map_err(|error| {
                     Error::RecoveryRequired(format!(
                         "the update failed ({reason}) and rolling back failed ({})",
                         error.protocol().1
@@ -1379,14 +1414,9 @@ pub fn execute(
         .ok()
         .and_then(|root| ManagedRoot::open(&root).ok());
     let reconciled = match &project {
-        Some(project) => reconcile::reconcile(
-            ctx,
-            &req.base,
-            project,
-            &scope,
-            req.request_id,
-            req.recovery_id,
-        ),
+        Some(project) => {
+            reconcile::reconcile(ctx, req, project, &scope, req.request_id, req.recovery_id)
+        }
         None => Err(Error::NotNextcloud),
     };
     if let Err(error) = reconciled {

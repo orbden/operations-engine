@@ -1148,3 +1148,23 @@ fn a_request_cancelled_before_it_starts_changes_nothing() {
     assert!(matches!(error, Error::Cancelled));
     fx.assert_refused_early("35.0.3");
 }
+
+#[test]
+fn a_code_directory_swapped_for_a_link_is_never_followed() {
+    // An update or a restore that finds a link where the code directory
+    // should be refuses before touching what the link points at.
+    let fx = Fx::new("35.0.3", "35.0.4");
+    assert_eq!(fx.update(A).unwrap().outcome, "updated");
+    let elsewhere = fx.path("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("keep.txt"), "not yours").unwrap();
+    fs::rename(&fx.docroot, fx.path("moved")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &fx.docroot).unwrap();
+    assert!(matches!(fx.restore(B, A).unwrap_err(), Error::NotNextcloud));
+    assert!(matches!(fx.update(C).unwrap_err(), Error::NotNextcloud));
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("keep.txt")).unwrap(),
+        "not yours"
+    );
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 1);
+}
