@@ -33,8 +33,36 @@ pub fn network_name(domain: &Domain) -> String {
     format!("wcp-node-net-{}", short(domain))
 }
 
+/// Where the ingress container sees the host's `/var/lib/wcp-static`.
+pub const STATIC_MOUNT: &str = "/srv/wcp-static";
+
+/// The directory (under the static root) that holds one application's
+/// published hashed client files: `<domain>-assets/_astro/...`.
+pub fn assets_dir_name(domain: &Domain) -> String {
+    format!("{domain}-assets")
+}
+
+/// The route this engine writes today: the hashed `/_astro/*` files are served
+/// by the ingress from the published copy when they exist there, and every
+/// other request, and any such file not published, goes to the application.
 pub fn render(domain: &Domain) -> String {
+    render_with(domain, true)
+}
+
+/// The route of releases before published assets (everything proxied). A host
+/// still on it is the engine's own route: the next deploy replaces it.
+pub fn render_legacy(domain: &Domain) -> String {
+    render_with(domain, false)
+}
+
+/// `text` is a route this engine wrote for `domain`, in either form.
+pub fn is_managed(domain: &Domain, text: &str) -> bool {
+    text == render(domain) || text == render_legacy(domain)
+}
+
+fn render_with(domain: &Domain, assets: bool) -> String {
     let upstream = container_name(domain);
+    let root = format!("{STATIC_MOUNT}/{}", assets_dir_name(domain));
     // One line per entry (a Rust `\` continuation would drop the indentation).
     let lines = [
         format!("{domain} {{"),
@@ -51,14 +79,42 @@ pub fn render(domain: &Domain) -> String {
         "    }".to_owned(),
         "    @versioned path /_astro/*".to_owned(),
         "    header @versioned Cache-Control \"public, max-age=31536000, immutable\"".to_owned(),
-        format!("    reverse_proxy {upstream}:{APP_PORT} {{"),
-        "        header_up X-Request-ID {http.request.uuid}".to_owned(),
-        "        header_down X-Request-ID {http.request.uuid}".to_owned(),
-        "    }".to_owned(),
+    ];
+    let mut lines = lines.to_vec();
+    // The proxy block is indented one more level inside `handle`.
+    let pad = if assets {
+        lines.extend([
+            "    @published {".to_owned(),
+            "        path /_astro/*".to_owned(),
+            "        file {".to_owned(),
+            format!("            root {root}"),
+            "            try_files {path}".to_owned(),
+            "        }".to_owned(),
+            "    }".to_owned(),
+            "    handle @published {".to_owned(),
+            format!("        root * {root}"),
+            "        file_server".to_owned(),
+            "    }".to_owned(),
+            "    handle {".to_owned(),
+        ]);
+        "    "
+    } else {
+        ""
+    };
+    lines.extend([
+        format!("{pad}    reverse_proxy {upstream}:{APP_PORT} {{"),
+        format!("{pad}        header_up X-Request-ID {{http.request.uuid}}"),
+        format!("{pad}        header_down X-Request-ID {{http.request.uuid}}"),
+        format!("{pad}    }}"),
+    ]);
+    if assets {
+        lines.push("    }".to_owned());
+    }
+    lines.extend([
         "    log_append request_id {http.request.uuid}".to_owned(),
         format!("    log_append domain {domain}"),
         "}".to_owned(),
-    ];
+    ]);
     lines.join("\n") + "\n"
 }
 
@@ -94,6 +150,7 @@ mod tests {
         );
         assert!(route.contains(&format!("reverse_proxy {}:4321 {{", container_name(&d))));
         assert_eq!(route.matches("reverse_proxy").count(), 1);
+        assert_eq!(render_legacy(&d).matches("reverse_proxy").count(), 1);
         for wanted in [
             "import /etc/wcp/ingress.d/bans/*.caddy",
             "encode zstd gzip",
@@ -107,10 +164,42 @@ mod tests {
         ] {
             assert!(route.contains(wanted), "{wanted}\n{route}");
         }
-        // No other upstream, file server, PHP handler or host path.
-        for forbidden in ["file_server", "php_fastcgi", "/var/www", "root *"] {
+        // No other upstream, PHP handler or host path; the only file server
+        // is the published copy of the hashed assets, and the legacy form has
+        // none.
+        for forbidden in ["php_fastcgi", "/var/www"] {
             assert!(!route.contains(forbidden), "{forbidden}");
         }
+        assert_eq!(route.matches("file_server").count(), 1);
+        assert_eq!(route.matches("root * ").count(), 1);
+        assert!(route.contains("root * /srv/wcp-static/app.example.test-assets\n"));
+        for forbidden in ["file_server", "root *", "handle"] {
+            assert!(!render_legacy(&d).contains(forbidden), "{forbidden}");
+        }
+    }
+
+    #[test]
+    fn the_new_route_proxies_everything_that_is_not_a_published_asset() {
+        let route = render(&domain("app.example.test"));
+        let published = route.find("handle @published {").unwrap();
+        let proxied = route.find("    handle {").unwrap();
+        let proxy = route.find("reverse_proxy").unwrap();
+        assert!(published < proxied && proxied < proxy);
+        // The asset matcher is the hashed directory only and needs the file.
+        assert!(route.contains("path /_astro/*\n        file {"));
+        assert!(route.contains("try_files {path}"));
+        // Braces balance, so Caddy accepts the text.
+        assert_eq!(route.matches('{').count(), route.matches('}').count());
+    }
+
+    #[test]
+    fn both_forms_are_managed_and_nothing_else_is() {
+        let d = domain("app.example.test");
+        assert!(is_managed(&d, &render(&d)));
+        assert!(is_managed(&d, &render_legacy(&d)));
+        assert!(!is_managed(&d, "app.example.test {\n    respond 200\n}\n"));
+        assert!(!is_managed(&d, &render(&domain("other.example.test"))));
+        assert_eq!(assets_dir_name(&d), "app.example.test-assets");
     }
 
     #[test]
