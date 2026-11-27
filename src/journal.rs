@@ -103,6 +103,7 @@ pub const ACTION_NAMESPACES: &[&str] = &[
     "file",
     "ingress",
     "joomla",
+    "nextcloud",
     "panel",
     "runtime",
     "security",
