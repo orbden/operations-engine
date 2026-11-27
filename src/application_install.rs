@@ -1028,7 +1028,8 @@ fn clone_repository(
     staging: &str,
     url: &str,
     cancel: &CancellationToken,
-) -> Result<Option<String>, Error> {
+) -> Result<Vec<String>, Error> {
+    let mut warnings = Vec::new();
     let output = exec(
         ctx,
         req,
@@ -1087,9 +1088,28 @@ fn clone_repository(
     if public.symlink_metadata(&rel(".user.ini")?).is_ok() {
         return Err(Error::RepositoryUserIni);
     }
+    // `public/storage` is what `storage:link` creates; one committed in the
+    // repository (usually a link to a path on its author's machine) would
+    // make that command fail. It is removed and the install says so.
+    let storage = rel("storage")?;
+    if let Ok(meta) = public.symlink_metadata(&storage) {
+        if meta.is_dir() && !meta.is_symlink() {
+            public.remove_dir_all(&storage)
+        } else {
+            public.remove_file(&storage)
+        }
+        .map_err(Error::Io)?;
+        warnings.push(
+            "the repository had a public/storage, which was removed; Laravel links it to storage/app/public"
+                .to_owned(),
+        );
+    }
     let (mut entries, mut bytes) = (MAX_CLONE_ENTRIES, MAX_CLONE_BYTES);
     within_limits(&staged, &mut entries, &mut bytes, 0)?;
-    let warning = large_clone_warning(MAX_CLONE_ENTRIES - entries, MAX_CLONE_BYTES - bytes);
+    warnings.extend(large_clone_warning(
+        MAX_CLONE_ENTRIES - entries,
+        MAX_CLONE_BYTES - bytes,
+    ));
     let example = read_env_example(&staged)?;
     staged
         .write_atomic(&rel(".env")?, example.as_bytes())
@@ -1113,7 +1133,7 @@ fn clone_repository(
         cancel,
     )?;
     locked_version(&staged, Application::Laravel).map_err(|_| Error::NotLaravel)?;
-    Ok(warning)
+    Ok(warnings)
 }
 
 /// A recommendation, not a refusal: a clone above the warning size installs,
@@ -2050,6 +2070,8 @@ case "$*" in
     ;;
   *storage:link*)
     [ -e "$dir/fail-link" ] && exit 1
+    # Laravel refuses when `public/storage` is already there.
+    if [ -e "$cwd/public/storage" ] || [ -L "$cwd/public/storage" ]; then exit 1; fi
     ;;
   *composer.phar\ require\ drush/drush*)
     [ -e "$dir/fail-drush" ] && exit 1
@@ -3068,6 +3090,30 @@ exit 0
         assert!(!ok(3, 10_000));
         assert!(!ok(100, 100));
         assert!(ok(100, 150 + 4096));
+    }
+
+    #[test]
+    fn a_committed_public_storage_is_removed_and_reported_not_a_failure() {
+        for kind in ["link", "dir", "file"] {
+            let f = fixture();
+            repo(&f, LARAVEL_LOCK, true);
+            let storage = f.dir.path().join("repo/public/storage");
+            match kind {
+                "link" => std::os::unix::fs::symlink("/home/dev/app/storage/app/public", &storage)
+                    .unwrap(),
+                "dir" => {
+                    fs::create_dir_all(storage.join("uploads")).unwrap();
+                    fs::write(storage.join("uploads/a.txt"), "a").unwrap();
+                }
+                _ => fs::write(&storage, "x").unwrap(),
+            }
+            let result = f
+                .run_plan(&laravel_git_plan(&f, GIT_URL), REQUEST_ID, None)
+                .unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+            assert_eq!(result.warnings.len(), 1, "{kind}: {:?}", result.warnings);
+            assert!(result.warnings[0].contains("public/storage"), "{kind}");
+            assert!(!f.site.join("public/storage").exists(), "{kind}");
+        }
     }
 
     #[test]
