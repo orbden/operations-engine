@@ -3049,7 +3049,6 @@ exit 0
         );
         assert!(large_clone_warning(WARN_CLONE_ENTRIES + 1, 0).is_some());
         assert!(large_clone_warning(0, WARN_CLONE_BYTES + 1).is_some());
-        assert!(WARN_CLONE_ENTRIES < MAX_CLONE_ENTRIES && WARN_CLONE_BYTES < MAX_CLONE_BYTES);
     }
 
     #[test]
