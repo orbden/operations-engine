@@ -925,7 +925,7 @@ fn run_install(
     }
 
     let version = match req.application {
-        Application::Joomla => finish_joomla(root, root_str, docroot)?,
+        Application::Joomla => finish_joomla(root, root_str, docroot, req)?,
         Application::Nextcloud => nextcloud::version(root, docroot)?,
         _ => locked_version(root, req.application)?,
     };
@@ -1419,10 +1419,25 @@ fn setup_joomla(
     )
 }
 
+/// `defines.php` for a Joomla site: behind the runtime pool's loopback hop
+/// (the only peer that can reach the site's process), the request is the
+/// site's own HTTPS address. A `Domain` is lowercase letters, digits, `-`
+/// and `.`, so it is safe inside a single-quoted PHP string.
+fn joomla_defines(domain: &str) -> String {
+    format!(
+        "<?php\n// Written by OrbDen: the runtime pool rewrites Host for its private hop.\nif (($_SERVER['REMOTE_ADDR'] ?? '') === '127.0.0.1') {{\n    $_SERVER['HTTP_HOST'] = '{domain}';\n    $_SERVER['HTTPS'] = 'on';\n}}\n"
+    )
+}
+
 /// After a successful CLI run: no `installation/` left, a regular
 /// `configuration.php` readable only by the site's UID and group, and the
 /// version from Joomla's manifest (read, never executed).
-fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<String, Error> {
+fn finish_joomla(
+    root: &ManagedRoot,
+    root_str: &str,
+    docroot: &str,
+    req: &Request,
+) -> Result<String, Error> {
     let installation = rel(format!("{docroot}/installation"))?;
     if root.symlink_metadata(&installation).is_ok() {
         root.remove_dir_all(&installation).map_err(Error::Io)?;
@@ -1435,8 +1450,23 @@ fn finish_joomla(root: &ManagedRoot, root_str: &str, docroot: &str) -> Result<St
         return Err(Error::Unverified);
     }
     root.set_mode(&config, 0o640).map_err(Error::Io)?;
-    crate::joomla_update::installed_version(Path::new(&format!("{root_str}/{docroot}")))
-        .map_err(|_| Error::Unverified)
+    // The runtime pool forwards the request with `Host` rewritten to its
+    // loopback address, and Joomla builds every redirect from `HTTP_HOST`
+    // (`$live_site` and `$behind_loadbalancer` do not change that).
+    // `defines.php` is Joomla's own early hook, loaded by the site and the
+    // administrator entry points; updates and configuration saves leave it.
+    let version =
+        crate::joomla_update::installed_version(Path::new(&format!("{root_str}/{docroot}")))
+            .map_err(|_| Error::Unverified)?;
+    let defines = joomla_defines(req.domain.as_str());
+    for dir in [docroot.to_owned(), format!("{docroot}/administrator")] {
+        let path = rel(format!("{dir}/defines.php"))?;
+        root.write_atomic(&path, defines.as_bytes())
+            .map_err(Error::Io)?;
+        root.chown(&path, req.uid, req.gid).map_err(Error::Io)?;
+        root.set_mode(&path, 0o640).map_err(Error::Io)?;
+    }
+    Ok(version)
 }
 
 /// Drupal: `settings.php` is made from `default.settings.php` with the site's
@@ -2929,6 +2959,7 @@ exit 0
                 ".user.ini",
                 "administrator",
                 "configuration.php",
+                "defines.php",
                 "htaccess.txt",
                 "index.php"
             ]
@@ -2938,6 +2969,16 @@ exit 0
             fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o640
         );
+        // Behind the pool's loopback hop the site's own address is used.
+        for path in ["public/defines.php", "public/administrator/defines.php"] {
+            let defines = f.site.join(path);
+            let text = fs::read_to_string(&defines).unwrap();
+            assert!(text.contains("$_SERVER['HTTP_HOST'] = '"), "{path}");
+            assert!(text.contains("$_SERVER['HTTPS'] = 'on';"), "{path}");
+            let meta = fs::metadata(&defines).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o640, "{path}");
+            assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid), "{path}");
+        }
         let meta = fs::metadata(f.site.join("public/administrator/manifests")).unwrap();
         assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));
         // The CLI ran once in the docroot, no Composer at all, and neither
