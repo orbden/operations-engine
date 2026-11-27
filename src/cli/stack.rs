@@ -15,6 +15,26 @@ pub enum RuntimeCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Switch the service patch window on (with the exact images the owner
+    /// approved and the confirmation `AUTOMATIC RESTARTS`) or off. Installs or
+    /// removes the daily timer.
+    SetPatchWindow {
+        /// Root-owned JSON file: enabled, hour, minute, targets, confirm.
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+    },
+    /// The daily run of the patch window (what the timer starts): applies the
+    /// approved images, one service at a time. Does nothing when the window
+    /// is off.
+    RunPatchWindow {
+        #[arg(long = "request-id")]
+        request_id: String,
+    },
+    /// The patch window's settings, approved targets, blocked images and the
+    /// last run (read-only).
+    PatchWindowStatus,
     /// Report each managed container's running version and whether the
     /// candidate images named in the request are a patch, a minor/major
     /// jump or already running (local, read-only).
@@ -431,6 +451,9 @@ impl RuntimeCommand {
             Self::Reconcile { .. } => "runtime.reconcile",
             Self::PatchStatus { .. } => "runtime.patchStatus",
             Self::PatchUpdate { .. } => "runtime.patchUpdate",
+            Self::SetPatchWindow { .. } => "runtime.setPatchWindow",
+            Self::RunPatchWindow { .. } => "runtime.runPatchWindow",
+            Self::PatchWindowStatus => "runtime.patchWindowStatus",
         }
     }
 }

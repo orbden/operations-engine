@@ -69,14 +69,29 @@ fn systemctl(program: &str, args: &[&str]) -> bool {
 /// Brings the schedule in line with `enabled`. `Unavailable` when systemd is
 /// not the running init or `systemctl` refuses.
 pub fn sync(enabled: bool, unit_dir: &Path, run_dir: &Path, program: &str) -> Timer {
+    sync_units(NAME, (SERVICE, TIMER), enabled, unit_dir, run_dir, program)
+}
+
+/// The same for any pair of fixed unit texts under `name` (the service
+/// patch window's schedule uses it): written when `enabled`, removed when not.
+pub fn sync_units(
+    name: &str,
+    (service_text, timer_text): (&str, &str),
+    enabled: bool,
+    unit_dir: &Path,
+    run_dir: &Path,
+    program: &str,
+) -> Timer {
     if !run_dir.is_dir() {
         return Timer::Unavailable;
     }
-    let service = unit_dir.join(format!("{NAME}.service"));
-    let timer = unit_dir.join(format!("{NAME}.timer"));
-    let unit = format!("{NAME}.timer");
+    let service = unit_dir.join(format!("{name}.service"));
+    let timer = unit_dir.join(format!("{name}.timer"));
+    let unit = format!("{name}.timer");
     if enabled {
-        if std::fs::write(&service, SERVICE).is_err() || std::fs::write(&timer, TIMER).is_err() {
+        if std::fs::write(&service, service_text).is_err()
+            || std::fs::write(&timer, timer_text).is_err()
+        {
             return Timer::Unavailable;
         }
         if systemctl(program, &["daemon-reload"]) && systemctl(program, &["enable", "--now", &unit])
