@@ -37,34 +37,56 @@ pub fn network_name(domain: &Domain) -> String {
 pub const STATIC_MOUNT: &str = "/srv/wcp-static";
 
 /// The directory (under the static root) that holds one application's
-/// published hashed client files: `<domain>-assets/_astro/...`.
+/// published client files: `<domain>-assets/` with the build's
+/// `dist/client` tree, hashed files under `_astro/`.
 pub fn assets_dir_name(domain: &Domain) -> String {
     format!("{domain}-assets")
 }
 
-/// The route this engine writes today: the hashed `/_astro/*` files are served
-/// by the ingress from the published copy when they exist there, and every
-/// other request, and any such file not published, goes to the application.
+/// How much of the application's client files the route serves itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// Everything goes to the application (the first releases).
+    Proxy,
+    /// Only the hashed `/_astro/*` files, from the published copy.
+    HashedOnly,
+    /// Any published client file (`favicon`, `robots.txt`, images, the hashed
+    /// files); the unhashed ones get a short cache lifetime.
+    Published,
+}
+
+/// The route this engine writes today: a file the build published to the
+/// ingress's static directory is served by the ingress, and every other
+/// request, and any file not published, goes to the application.
 pub fn render(domain: &Domain) -> String {
-    render_with(domain, true)
+    render_with(domain, Form::Published)
 }
 
-/// The route of releases before published assets (everything proxied). A host
-/// still on it is the engine's own route: the next deploy replaces it.
-pub fn render_legacy(domain: &Domain) -> String {
-    render_with(domain, false)
+/// Routes written by earlier releases of this engine. A host still on one is
+/// the engine's own route: the next deploy replaces it.
+fn earlier_forms(domain: &Domain) -> [String; 2] {
+    [
+        render_with(domain, Form::Proxy),
+        render_with(domain, Form::HashedOnly),
+    ]
 }
 
-/// `text` is a route this engine wrote for `domain`, in either form.
+/// `text` is a route this engine wrote for `domain`, in any form.
 pub fn is_managed(domain: &Domain, text: &str) -> bool {
-    text == render(domain) || text == render_legacy(domain)
+    text == render(domain) || earlier_forms(domain).iter().any(|form| form == text)
 }
 
-fn render_with(domain: &Domain, assets: bool) -> String {
+/// The first form, for tests that adopt it.
+#[cfg(test)]
+pub fn render_legacy(domain: &Domain) -> String {
+    render_with(domain, Form::Proxy)
+}
+
+fn render_with(domain: &Domain, form: Form) -> String {
     let upstream = container_name(domain);
     let root = format!("{STATIC_MOUNT}/{}", assets_dir_name(domain));
     // One line per entry (a Rust `\` continuation would drop the indentation).
-    let lines = [
+    let mut lines = vec![
         format!("{domain} {{"),
         "    import /etc/wcp/ingress.d/bans/*.caddy".to_owned(),
         "    encode zstd gzip".to_owned(),
@@ -80,12 +102,13 @@ fn render_with(domain: &Domain, assets: bool) -> String {
         "    @versioned path /_astro/*".to_owned(),
         "    header @versioned Cache-Control \"public, max-age=31536000, immutable\"".to_owned(),
     ];
-    let mut lines = lines.to_vec();
-    // The proxy block is indented one more level inside `handle`.
-    let pad = if assets {
+    let proxied = form != Form::Proxy;
+    if proxied {
+        lines.push("    @published {".to_owned());
+        if form == Form::HashedOnly {
+            lines.push("        path /_astro/*".to_owned());
+        }
         lines.extend([
-            "    @published {".to_owned(),
-            "        path /_astro/*".to_owned(),
             "        file {".to_owned(),
             format!("            root {root}"),
             "            try_files {path}".to_owned(),
@@ -93,21 +116,27 @@ fn render_with(domain: &Domain, assets: bool) -> String {
             "    }".to_owned(),
             "    handle @published {".to_owned(),
             format!("        root * {root}"),
+        ]);
+        if form == Form::Published {
+            lines.extend([
+                "        @unhashed not path /_astro/*".to_owned(),
+                "        header @unhashed Cache-Control \"public, max-age=3600\"".to_owned(),
+            ]);
+        }
+        lines.extend([
             "        file_server".to_owned(),
             "    }".to_owned(),
             "    handle {".to_owned(),
         ]);
-        "    "
-    } else {
-        ""
-    };
+    }
+    let pad = if proxied { "    " } else { "" };
     lines.extend([
         format!("{pad}    reverse_proxy {upstream}:{APP_PORT} {{"),
         format!("{pad}        header_up X-Request-ID {{http.request.uuid}}"),
         format!("{pad}        header_down X-Request-ID {{http.request.uuid}}"),
         format!("{pad}    }}"),
     ]);
-    if assets {
+    if proxied {
         lines.push("    }".to_owned());
     }
     lines.extend([
@@ -185,11 +214,27 @@ mod tests {
         let proxied = route.find("    handle {").unwrap();
         let proxy = route.find("reverse_proxy").unwrap();
         assert!(published < proxied && proxied < proxy);
-        // The asset matcher is the hashed directory only and needs the file.
-        assert!(route.contains("path /_astro/*\n        file {"));
+        // Any published file, but only when the file exists there.
+        assert!(route.contains("@published {\n        file {"));
         assert!(route.contains("try_files {path}"));
+        // Unhashed files get a short lifetime; the hashed ones stay immutable.
+        assert!(route.contains("@unhashed not path /_astro/*"));
+        assert!(route.contains("header @unhashed Cache-Control \"public, max-age=3600\""));
         // Braces balance, so Caddy accepts the text.
         assert_eq!(route.matches('{').count(), route.matches('}').count());
+    }
+
+    #[test]
+    fn every_earlier_form_is_still_the_engines_own_route() {
+        let d = domain("app.example.test");
+        let upstream = container_name(&d);
+        // The form that served only `/_astro/*` from the published copy,
+        // written out as it was released.
+        let hashed_only = format!(
+            "app.example.test {{\n    import /etc/wcp/ingress.d/bans/*.caddy\n    encode zstd gzip\n    header {{\n        Strict-Transport-Security \"max-age=31536000\"\n        X-Content-Type-Options \"nosniff\"\n        Referrer-Policy \"strict-origin-when-cross-origin\"\n        Permissions-Policy \"camera=(), microphone=(), geolocation=()\"\n        Content-Security-Policy \"frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'\"\n        -Server\n        -X-Powered-By\n    }}\n    @versioned path /_astro/*\n    header @versioned Cache-Control \"public, max-age=31536000, immutable\"\n    @published {{\n        path /_astro/*\n        file {{\n            root /srv/wcp-static/app.example.test-assets\n            try_files {{path}}\n        }}\n    }}\n    handle @published {{\n        root * /srv/wcp-static/app.example.test-assets\n        file_server\n    }}\n    handle {{\n        reverse_proxy {upstream}:4321 {{\n            header_up X-Request-ID {{http.request.uuid}}\n            header_down X-Request-ID {{http.request.uuid}}\n        }}\n    }}\n    log_append request_id {{http.request.uuid}}\n    log_append domain app.example.test\n}}\n"
+        );
+        assert!(is_managed(&d, &hashed_only));
+        assert_ne!(hashed_only, render(&d));
     }
 
     #[test]
