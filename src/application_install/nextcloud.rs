@@ -288,6 +288,9 @@ pub(super) fn setup(
         ("trusted_domains", Some("1"), domain),
         ("overwrite.cli.url", None, url.as_str()),
         ("overwriteprotocol", None, "https"),
+        // The runtime pool rewrites Host for its private hop; Nextcloud builds
+        // its redirects from `overwritehost` for web requests.
+        ("overwritehost", None, domain),
     ] {
         let value = format!("--value={value}");
         let mut args = vec!["php", "occ", "--no-warnings", "config:system:set", key];

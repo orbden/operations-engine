@@ -176,7 +176,7 @@ fn open_basedir_follows_the_project_root_not_the_document_root() {
     assert_eq!(req.config.root, "/var/www/example/public");
     assert!(
         site_open_basedir_ini(&req.config.project_root)
-            .contains("open_basedir = /var/www/example:/tmp:")
+            .contains("open_basedir = /var/www/example:/var/www/example-data:/tmp:")
     );
     // A project root that does not contain the root is refused.
     assert_eq!(
@@ -255,7 +255,7 @@ fn write_site_service_writes_the_three_files_and_scans_once() {
     assert!(caddy.contains("root * /var/www/example"));
     assert!(caddy.contains("worker /var/www/example/index.php 2"));
     let ini = fixture.service_file("fp1-php83", "example.test", "open-basedir.ini");
-    assert!(ini.contains("open_basedir = /var/www/example:/tmp"));
+    assert!(ini.contains("open_basedir = /var/www/example:/var/www/example-data:/tmp"));
     assert_eq!(
         fixture.calls(),
         vec![format!(

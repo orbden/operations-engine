@@ -171,6 +171,12 @@ pub(crate) fn validate_project_root(
     content_roots: &[TrustedRoot],
 ) -> Result<(), RequestError> {
     validate_root(project_root, content_roots)?;
+    // `<project root>-data` is readable by the site (`open_basedir`, for an
+    // application's data directory beside it): no other site's root may be
+    // such a name.
+    if project_root.ends_with("-data") {
+        return Err(RequestError::InvalidProjectRoot);
+    }
     let contains = root == project_root
         || root
             .strip_prefix(project_root)
@@ -1984,6 +1990,12 @@ mod tests {
                 RequestError::InvalidRoot,
             ),
             ("/var/www/x/public", "/etc", RequestError::InvalidRoot),
+            // The data directory name of another site is not a project root.
+            (
+                "/var/www/x-data/public",
+                "/var/www/x-data",
+                RequestError::InvalidProjectRoot,
+            ),
         ] {
             assert_eq!(
                 validate_project_root(root, project, &content),
