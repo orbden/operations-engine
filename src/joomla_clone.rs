@@ -211,7 +211,7 @@ fn property(line: &str) -> Option<(&str, &str, &str)> {
 }
 
 /// The text of a PHP single-quoted string literal (`\\` and `\'` unescaped).
-fn php_string(raw: &str) -> Option<String> {
+pub(crate) fn php_string(raw: &str) -> Option<String> {
     let inner = raw.strip_prefix('\'')?.strip_suffix('\'')?;
     let mut out = String::new();
     let mut chars = inner.chars();

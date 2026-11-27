@@ -1,6 +1,7 @@
-//! The two database steps every recovery-first update shares: a MySQL/MariaDB
-//! client call inside the database container, and emptying the site's
-//! database before an import. Used by the Drupal and Joomla rollbacks.
+//! The database steps every recovery-first update shares: a MySQL/MariaDB
+//! client call inside the database container, the dump for a recovery bundle,
+//! and emptying the site's database before an import. Used by the Drupal,
+//! Joomla and Nextcloud updates.
 
 use crate::{
     drupal_action::{DbConnection, MAX_OUTPUT},
@@ -33,6 +34,39 @@ pub(crate) fn db_client(docker_program: &str, connection: &DbConnection) -> Proc
             format!("-u{}", connection.user),
             connection.database.clone(),
         ])
+}
+
+/// Streams a `mariadb-dump` of the site's database into `file` through the
+/// database container's own client; the password travels only in the
+/// environment of that one `docker exec`. Used by the recovery bundles.
+pub(crate) fn dump(
+    docker_program: &str,
+    connection: &DbConnection,
+    file: std::fs::File,
+    limits: &ProcessLimits,
+    cancel: &CancellationToken,
+) -> Result<(), DbError> {
+    let request = ProcessRequest::new(docker_program)
+        .env("MYSQL_PWD", &connection.password)
+        .args([
+            "exec".to_owned(),
+            "-i".into(),
+            "-e".into(),
+            "MYSQL_PWD".into(),
+            connection.host.clone(),
+            "mariadb-dump".into(),
+            format!("-u{}", connection.user),
+            "--single-transaction".into(),
+            "--routines".into(),
+            "--triggers".into(),
+            connection.database.clone(),
+        ]);
+    let output =
+        process::run_with_stdout_file(&request, file, limits, cancel).map_err(DbError::Run)?;
+    if !exited_ok(&output) {
+        return Err(DbError::Failed("the database could not be dumped"));
+    }
+    Ok(())
 }
 
 /// Drops every table and view of the site's database through the database

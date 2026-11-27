@@ -75,6 +75,7 @@ pub mod maria_user;
 pub mod mariadb_migrate;
 pub mod meilisearch_upgrade;
 pub mod mutation;
+pub mod nextcloud_update;
 pub mod node_app;
 pub mod node_build;
 pub mod node_ingress;
@@ -193,6 +194,7 @@ pub fn execute(cli: Cli) -> Response {
         Command::Application { command } => commands::application::run(command),
         Command::Drupal { command } => commands::drupal::run(command),
         Command::Joomla { command } => commands::joomla::run(command),
+        Command::Nextcloud { command } => commands::nextcloud::run(command),
         Command::Cms { command } => commands::cms::run(command),
         Command::Node { command } => commands::node::run(command),
         Command::Tool { command } => commands::tool::run(command),

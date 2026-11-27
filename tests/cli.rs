@@ -139,6 +139,8 @@ fn capabilities_describe_only_implemented_operations() {
             "joomla.clearCache",
             "joomla.restoreUpdate",
             "joomla.updateCore",
+            "nextcloud.restoreUpdate",
+            "nextcloud.updateCore",
             "drupal.clone",
             "wordpress.migrateExport",
             "wordpress.migrateDiscard",
