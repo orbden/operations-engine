@@ -329,7 +329,7 @@ pub fn run(
                 results.push(Outcome {
                     service: target.service.clone(),
                     outcome: "failed".into(),
-                    message: Some(short(&error.message())),
+                    message: Some(short(error.message())),
                 });
                 continue;
             }
