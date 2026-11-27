@@ -573,22 +573,9 @@ fn dump_database(
         .backup_root
         .create_new_file(&rel(format!("{dir}/database.sql")))
         .map_err(|_| Error::BundleFailed)?;
-    let output = process::run_with_stdout_file(
-        &ProcessRequest::new(ctx.docker_program)
-            .env("MYSQL_PWD", &connection.password)
-            .args([
-                "exec".to_owned(),
-                "-i".into(),
-                "-e".into(),
-                "MYSQL_PWD".into(),
-                connection.host.clone(),
-                "mariadb-dump".into(),
-                format!("-u{}", connection.user),
-                "--single-transaction".into(),
-                "--routines".into(),
-                "--triggers".into(),
-                connection.database.clone(),
-            ]),
+    update_db::dump(
+        ctx.docker_program,
+        connection,
         file,
         &ProcessLimits {
             timeout: UPDATE_TIMEOUT,
@@ -597,11 +584,10 @@ fn dump_database(
         },
         cancel,
     )
-    .map_err(Error::Run)?;
-    if !exited_ok(&output) {
-        return Err(Error::BundleFailed);
-    }
-    Ok(())
+    .map_err(|error| match error {
+        update_db::DbError::Run(error) => Error::Run(error),
+        update_db::DbError::Failed(_) => Error::BundleFailed,
+    })
 }
 
 fn bundle(

@@ -1004,6 +1004,66 @@ reports interrupted requests of these operations in `operation.incomplete`
 with `recoveredBy: joomla.restoreUpdate`. Extensions are not updated: Joomla's
 console has no command for it.
 
+## `nextcloud.updateCore`, `nextcloud.restoreUpdate`
+
+`nextcloud update-core` and `nextcloud restore-update` accept a root-owned JSON
+request with `container`, `projectRoot`, `documentRoot` (the Nextcloud code
+directory: one directory directly below the project, as `application.install`
+makes it), `uid` and `gid`, and, for `update-core`, `archive: {url, sha256}`
+(the pinned release: only
+`https://download.nextcloud.com/server/releases/nextcloud-X.Y.Z.tar.bz2` and
+a lowercase SHA-256) or, for restore, `recoveryId`. One
+lock/idempotency/transaction/audit-backed request; nothing else is accepted
+and there is no command argument.
+
+Preflight changes nothing and downloads nothing until it holds: `occ`,
+`version.php` and `config/config.php` are regular files, `config.php` names a
+MySQL/MariaDB (`dbtype` `mysql`, `dbhost` a container name, with an optional
+`:port`; PostgreSQL, SQLite, a socket, `localhost` and an address are
+refused), the data directory (`datadirectory`) is named and lies outside the
+code directory, `occ status --output=json` reports an installed site whose
+version equals the one in `version.php`, a boolean maintenance mode and no
+pending upgrade (anything unclear is refused, never assumed), and the pinned
+version is **newer** than the installed one and the **same or the next major**
+(the same version, an older one and a skipped major are refused).
+
+Then the archive is fetched with `pinned_download` (no redirect, size and time
+limits, SHA-256 must equal the pin), unpacked beside the site as
+`<project>/.wcp-nc-update-<requestId>/public` (no absolute names, links out of
+the tree, hardlinks or devices), its `version.php` must be the version the URL
+names, and the tree passes to the site's UID. The engine then writes a recovery
+bundle under `nextcloud-updates/<requestId>/` in the backup root
+(`files.tar.gz` of the code directory with `config/`, a `mariadb-dump`,
+`manifest.json` with SHA-256 sums and `steps.json`, a journal of step names).
+The data directory is neither copied nor touched. The database is dumped just
+before maintenance mode goes on, so a change made to it in that short window
+is not in the bundle.
+
+The update itself: `occ maintenance:mode --on` (skipped when the site was
+already in maintenance), the code directory's content is replaced by the
+release's (the site's `config/`, `custom_apps/`, `themes/` and `.user.ini`
+stay), `occ upgrade --no-interaction` as the site user, `occ maintenance:mode
+--off` (only if it was off before) and a probe: `occ status` reports the new
+version, the earlier maintenance mode and no pending upgrade. Any failure
+after the bundle is rolled back by the engine itself: the code directory is
+emptied and extracted from the bundle (which also brings the earlier
+maintenance mode back), the database is emptied and re-imported, and the probe
+runs for the old version. The result is `updated` (`versionBefore`,
+`versionAfter`), `rolledBack` (with a fixed `reason`, never tool output) or,
+when the rollback cannot be proved, a `recovery required` error naming the
+`recoveryId`. `nextcloud.restoreUpdate` runs the same rollback from a kept
+bundle (bundles are pruned after seven days). The database password is read
+from `config.php` only to be put in the environment of one `docker exec` (dump
+and restore); it is in no argument, journal, audit record or result.
+
+A later `nextcloud.*` update request for the same project first rolls back an
+earlier update whose journal did not end in `finished` or `rolledBack` (and
+removes unpacked releases a dead request left), and reports interrupted
+requests of these operations in `operation.incomplete` with
+`recoveredBy: nextcloud.restoreUpdate`. Apps are not updated separately:
+`occ upgrade` handles the ones Nextcloud ships and disables incompatible
+third-party apps itself.
+
 ## `drupal.updateCore`, `drupal.updatePackages`, `drupal.restoreUpdate`
 
 `drupal update-core`, `drupal update-packages` and `drupal restore-update` take

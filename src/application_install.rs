@@ -87,7 +87,7 @@ use crate::{
     wordpress_install::{validate_bounded, validate_email},
 };
 
-mod nextcloud;
+pub(crate) mod nextcloud;
 
 pub const OPERATION: &str = "application.install";
 

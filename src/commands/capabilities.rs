@@ -194,6 +194,8 @@ pub const OPERATIONS: &[&str] = &[
     "joomla.clearCache",
     "joomla.restoreUpdate",
     "joomla.updateCore",
+    "nextcloud.restoreUpdate",
+    "nextcloud.updateCore",
     "drupal.clone",
     "wordpress.migrateExport",
     "wordpress.migrateDiscard",

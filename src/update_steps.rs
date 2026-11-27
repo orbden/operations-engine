@@ -1,4 +1,4 @@
-//! The steps of a recovery-first update (Drupal, Joomla) as one type.
+//! The steps of a recovery-first update (Drupal, Joomla, Nextcloud) as one type.
 //!
 //! Each update keeps a diagnostic journal, `<bundles>/<request id>/steps.json`,
 //! of how far it got, so a later request can tell an interrupted update from
@@ -19,13 +19,14 @@ pub const MAX_JOURNAL_BYTES: usize = 8 * 1024;
 
 /// One step reached. Which steps an update uses depends on the CMS: Drupal
 /// has `MaintenanceOn`, `ComposerDone` and `DatabaseUpdated`; Joomla has
-/// `OfflineOn` and `Updated`. The rest are shared.
+/// `OfflineOn` and `Updated`; Nextcloud has `MaintenanceOn`, `CodeReplaced`
+/// and `Updated`. The rest are shared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Step {
     /// The recovery bundle is complete (manifest written).
     Bundled,
-    /// Drupal: maintenance mode is on.
+    /// Drupal, Nextcloud: maintenance mode is on.
     MaintenanceOn,
     /// Joomla: the site is offline.
     OfflineOn,
@@ -33,8 +34,11 @@ pub enum Step {
     ComposerDone,
     /// Drupal: `updatedb` finished.
     DatabaseUpdated,
-    /// Joomla: `core:update` returned success.
+    /// Joomla: `core:update` returned success. Nextcloud: `occ upgrade` did.
     Updated,
+    /// Nextcloud: the code of the site is the new release's (the site's
+    /// `config/`, `custom_apps/` and `themes/` kept).
+    CodeReplaced,
     /// The health probe after the update passed.
     Probed,
     /// The update ended well and the site is back in its earlier mode.
@@ -48,13 +52,14 @@ pub enum Step {
 
 impl Step {
     /// Every step, for tests that must cover them all.
-    pub const ALL: [Step; 12] = [
+    pub const ALL: [Step; 13] = [
         Self::Bundled,
         Self::MaintenanceOn,
         Self::OfflineOn,
         Self::ComposerDone,
         Self::DatabaseUpdated,
         Self::Updated,
+        Self::CodeReplaced,
         Self::Probed,
         Self::Finished,
         Self::RollbackStarted,
@@ -72,6 +77,7 @@ impl Step {
             Self::ComposerDone => "composer-done",
             Self::DatabaseUpdated => "database-updated",
             Self::Updated => "updated",
+            Self::CodeReplaced => "code-replaced",
             Self::Probed => "probed",
             Self::Finished => "finished",
             Self::RollbackStarted => "rollback-started",
@@ -156,6 +162,7 @@ pub fn journal_dir(operation: &str) -> Option<&'static str> {
     match operation {
         "drupal.updateCore" | "drupal.updatePackages" => Some("drupal-updates"),
         "joomla.updateCore" => Some("joomla-updates"),
+        "nextcloud.updateCore" => Some("nextcloud-updates"),
         _ => None,
     }
 }
@@ -174,13 +181,14 @@ mod tests {
     /// Serialized name and failpoint suffix of every step: what earlier
     /// engines wrote and what the failpoint tests set. Changing a row breaks
     /// journals on disk.
-    const TABLE: [(Step, &str, &str); 12] = [
+    const TABLE: [(Step, &str, &str); 13] = [
         (Step::Bundled, "bundled", "bundled"),
         (Step::MaintenanceOn, "maintenanceOn", "maintenance-on"),
         (Step::OfflineOn, "offlineOn", "offline-on"),
         (Step::ComposerDone, "composerDone", "composer-done"),
         (Step::DatabaseUpdated, "databaseUpdated", "database-updated"),
         (Step::Updated, "updated", "updated"),
+        (Step::CodeReplaced, "codeReplaced", "code-replaced"),
         (Step::Probed, "probed", "probed"),
         (Step::Finished, "finished", "finished"),
         (Step::RollbackStarted, "rollbackStarted", "rollback-started"),
@@ -214,6 +222,10 @@ mod tests {
             assert_eq!(
                 step.failpoint("joomla"),
                 format!("joomla-update-after-{kebab}")
+            );
+            assert_eq!(
+                step.failpoint("nextcloud"),
+                format!("nextcloud-update-after-{kebab}")
             );
         }
     }
@@ -283,12 +295,12 @@ mod tests {
     #[test]
     fn failpoint_names_are_unique_per_kind_and_step() {
         let mut seen = std::collections::BTreeSet::new();
-        for kind in ["drupal", "joomla"] {
+        for kind in ["drupal", "joomla", "nextcloud"] {
             for step in Step::ALL {
                 assert!(seen.insert(step.failpoint(kind)), "{kind} {step:?}");
             }
         }
-        assert_eq!(seen.len(), 2 * Step::ALL.len());
+        assert_eq!(seen.len(), 3 * Step::ALL.len());
     }
 
     #[test]
@@ -325,6 +337,11 @@ mod tests {
         assert_eq!(journal_dir("drupal.updateCore"), Some("drupal-updates"));
         assert_eq!(journal_dir("drupal.updatePackages"), Some("drupal-updates"));
         assert_eq!(journal_dir("joomla.updateCore"), Some("joomla-updates"));
+        assert_eq!(
+            journal_dir("nextcloud.updateCore"),
+            Some("nextcloud-updates")
+        );
+        assert_eq!(journal_dir("nextcloud.restoreUpdate"), None);
         assert_eq!(journal_dir("drupal.restoreUpdate"), None);
         assert_eq!(journal_dir("site.deploy"), None);
     }

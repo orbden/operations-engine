@@ -117,6 +117,12 @@ pub enum Command {
         command: JoomlaCommand,
     },
 
+    /// Typed Nextcloud application operations.
+    Nextcloud {
+        #[command(subcommand)]
+        command: NextcloudCommand,
+    },
+
     /// Typed CMS application operations that are not tied to one CMS's own
     /// command group.
     Cms {
@@ -191,6 +197,7 @@ impl Command {
             Self::Wordpress { command } => command.operation(),
             Self::Drupal { command } => command.operation(),
             Self::Joomla { command } => command.operation(),
+            Self::Nextcloud { command } => command.operation(),
             Self::Cms { command } => command.operation(),
             Self::Node { command } => command.operation(),
             Self::Tool { command } => command.operation(),
@@ -582,6 +589,39 @@ impl JoomlaCommand {
             Self::UpdateCore { .. } => "joomla.updateCore",
             Self::RestoreUpdate { .. } => "joomla.restoreUpdate",
             Self::ClearCache { .. } => "joomla.clearCache",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NextcloudCommand {
+    /// Update Nextcloud to the pinned release archive after writing a
+    /// recovery bundle (code and database); a failed update is rolled back by
+    /// the engine, a downgrade and a skipped major version are refused.
+    UpdateCore {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+    /// Put a kept recovery bundle back (code and database) and run the health probe.
+    RestoreUpdate {
+        #[arg(long = "request-file")]
+        request_file: PathBuf,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
+}
+
+impl NextcloudCommand {
+    pub const fn operation(&self) -> &'static str {
+        match self {
+            Self::UpdateCore { .. } => "nextcloud.updateCore",
+            Self::RestoreUpdate { .. } => "nextcloud.restoreUpdate",
         }
     }
 }

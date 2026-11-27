@@ -40,12 +40,12 @@ use crate::{
     tar_extract,
 };
 
-const ARCHIVE_PREFIX: &str = "https://download.nextcloud.com/server/releases/nextcloud-";
+pub(crate) const ARCHIVE_PREFIX: &str = "https://download.nextcloud.com/server/releases/nextcloud-";
 const ARCHIVE_SUFFIX: &str = ".tar.bz2";
 /// The 35.0 archive is about 250 MB and unpacks to about 800 MB in 32 000
 /// entries.
-const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+pub(crate) const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const EXTRACT_LIMITS: tar_extract::Limits = tar_extract::Limits {
     max_entries: 100_000,
     max_file_bytes: 2 * 1024 * 1024 * 1024,
@@ -75,7 +75,7 @@ require 'console.php';
 
 /// A release archive on Nextcloud's own download server: exactly
 /// `…/server/releases/nextcloud-<major>.<minor>.<patch>.tar.bz2`.
-pub(super) fn archive_url_ok(url: &str) -> bool {
+pub(crate) fn archive_url_ok(url: &str) -> bool {
     url.strip_prefix(ARCHIVE_PREFIX)
         .and_then(|rest| rest.strip_suffix(ARCHIVE_SUFFIX))
         .is_some_and(|version| {
@@ -204,7 +204,7 @@ pub(super) fn stage(
     Ok(())
 }
 
-fn unpack(file: std::fs::File, root: &ManagedRoot, staging: &str) -> Result<(), Error> {
+pub(crate) fn unpack(file: std::fs::File, root: &ManagedRoot, staging: &str) -> Result<(), Error> {
     root.create_dir(&rel(staging)?).map_err(Error::Io)?;
     let staged = root
         .open_child_dir_nofollow(&rel(staging)?)
@@ -332,7 +332,7 @@ pub(super) fn setup(
 }
 
 /// `occ status --output=json` reports `"installed": true`.
-fn installed(stdout: &str) -> bool {
+pub(crate) fn installed(stdout: &str) -> bool {
     stdout
         .lines()
         .rev()
@@ -341,7 +341,7 @@ fn installed(stdout: &str) -> bool {
 }
 
 /// `$OC_VersionString` of the docroot's `version.php`, read as text.
-pub(super) fn version(root: &ManagedRoot, docroot: &str) -> Result<String, Error> {
+pub(crate) fn version(root: &ManagedRoot, docroot: &str) -> Result<String, Error> {
     let text = root
         .read_to_string(&rel(format!("{docroot}/version.php"))?)
         .map_err(|_| Error::Unverified)?;

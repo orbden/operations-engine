@@ -43,6 +43,8 @@ fn page(root: &ManagedRoot, query: &Query) -> ListOutcome {
 fn valid_entries_parse_and_bad_fields_are_rejected() {
     assert!(NewEntry::parse(raw("cms.adminLogin")).is_ok());
     assert!(NewEntry::parse(raw("wordpress.updateCore")).is_ok());
+    assert!(NewEntry::parse(raw("nextcloud.updateCore")).is_ok());
+    assert!(NewEntry::parse(raw("nextcloud.restoreUpdate")).is_ok());
     assert!(
         NewEntry::parse(RawEntry {
             site: Some(SITE),
