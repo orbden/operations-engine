@@ -53,9 +53,9 @@ its authoritative operation list. The current source includes:
 - `runtime.setPatchWindow` / `runtime.runPatchWindow`: an off-by-default daily
   window that applies only the images the owner approved, with the manual
   patch sequence's health wait and restore, and blocks an image that failed.
-- Node applications: `node.build` (npm build in a throw-away, digest-pinned
+- Node applications: `node.build` (npm, pnpm or Yarn classic build in a throw-away, digest-pinned
   container), `node.deployApp`, `node.appStatus`, `node.restartApp` and
-  `node.removeApp` (one container per application).
+  `node.removeApp` (one container per application; `node.deployApp` can also start a kept release again as a rollback).
 - `stack.ensureDataService` starts one PostgreSQL line of the managed stack;
   `stack.stopDataService` stops one only when it holds no database and no
   table of its own; `db.provisionPostgresUser` grants the role the `public`

@@ -79,6 +79,7 @@ pub mod nextcloud_update;
 pub mod node_app;
 pub mod node_build;
 pub mod node_ingress;
+pub(crate) mod node_pm;
 pub mod operation_status;
 pub mod permissions;
 pub mod pg_drop;
