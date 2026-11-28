@@ -9,6 +9,7 @@ pub const RELOAD_WORKERS_OPERATION: &str = "stack.reloadWorkers";
 pub const FLUSH_FPC_OPERATION: &str = "stack.flushFpc";
 pub const WRITE_SITE_SERVICE_OPERATION: &str = "stack.writeSiteService";
 pub const ACTIVATE_SITE_CONFIG_OPERATION: &str = "stack.activateSiteConfig";
+pub const SET_SITE_APP_PROFILE_OPERATION: &str = "stack.setSiteAppProfile";
 pub const REMOVE_SITE_SERVICE_OPERATION: &str = "stack.removeSiteService";
 
 /// Where each pool sees its own `site_services_root/<runtime id>/` subtree,

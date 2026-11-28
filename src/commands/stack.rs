@@ -128,6 +128,21 @@ pub fn run(command: StackCommand) -> Result<Response, ResponseBuildError> {
             &request_id,
             idempotency_key.as_deref(),
         ),
+        StackCommand::SetSiteAppProfile {
+            runtime_id,
+            domain,
+            port,
+            profile,
+            request_id,
+            idempotency_key,
+        } => set_site_app_profile(
+            &runtime_id,
+            &domain,
+            port,
+            &profile,
+            &request_id,
+            idempotency_key.as_deref(),
+        ),
         StackCommand::ProbeSite {
             kind,
             service,
@@ -396,6 +411,40 @@ fn activate_site_config(
     };
     run_service_operation(ACTIVATE_SITE_CONFIG_OPERATION, |ctx, cancel| {
         activate_site_config(ctx, &request, cancel)
+    })
+}
+
+fn set_site_app_profile(
+    runtime_id: &str,
+    domain: &str,
+    port: u16,
+    profile: &str,
+    request_id: &str,
+    idempotency_key: Option<&str>,
+) -> Result<Response, ResponseBuildError> {
+    use crate::stack_service::{
+        SET_SITE_APP_PROFILE_OPERATION, SetSiteAppProfileRequest, set_site_app_profile,
+    };
+
+    let request = match SetSiteAppProfileRequest::parse(
+        runtime_id,
+        domain,
+        port,
+        profile,
+        request_id,
+        idempotency_key,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(Response::failure(
+                SET_SITE_APP_PROFILE_OPERATION,
+                ErrorCode::InvalidInput,
+                error.message(),
+            ));
+        }
+    };
+    run_service_operation(SET_SITE_APP_PROFILE_OPERATION, |ctx, cancel| {
+        set_site_app_profile(ctx, &request, cancel)
     })
 }
 

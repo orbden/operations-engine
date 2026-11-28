@@ -11,8 +11,9 @@
 //! 2. `tar_extract` unpacks it into the staging directory (no absolute
 //!    names, no `..`, no symlink leaving the tree, no hardlinks or devices,
 //!    entry and byte limits). The archive's `nextcloud/` becomes the docroot
-//!    `public/`; its `.user.ini` is dropped because the site's own one
-//!    (kept in the docroot) belongs to the panel. The tree then passes to the
+//!    `public/`; its `.user.ini` is kept, taking the place of the
+//!    panel's placeholder in the docroot (the integrity check lists it; FrankenPHP
+//!    does not read it, so `stack.setSiteAppProfile` applies its settings). The tree then passes to the
 //!    site's UID with the descriptor-based ownership walk.
 //! 3. The data directory is `<content root>/<domain>-data`: outside the
 //!    document root, owned by the site's UID, mode 0700. An existing one that
@@ -230,8 +231,10 @@ pub(crate) fn unpack(file: std::fs::File, root: &ManagedRoot, staging: &str) -> 
     {
         return Err(Error::ArchiveInvalid);
     }
+    // Its own `.user.ini` stays: Nextcloud's integrity check lists the file,
+    // and the PHP settings it carries are applied by `app-php.ini`.
     match inner.symlink_metadata(&rel(".user.ini")?) {
-        Ok(meta) if meta.is_file() => inner.remove_file(&rel(".user.ini")?).map_err(Error::Io)?,
+        Ok(meta) if meta.is_file() => {}
         Ok(_) => return Err(Error::ArchiveInvalid),
         Err(_) => {}
     }

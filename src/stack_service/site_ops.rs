@@ -122,6 +122,62 @@ pub fn activate_site_config(
     )
 }
 
+/// Writes (or removes) a site's `app-php.ini`, restarts its child so the new
+/// settings are read and waits for it to answer. If the restarted process
+/// never answers, the previous file (or its absence) is restored and the
+/// child restarted on it. A site with no service directory is refused
+/// (`SiteConfigMissing`): the file is only meaningful next to a `Caddyfile`.
+pub fn set_site_app_profile(
+    ctx: &Context<'_>,
+    req: &SetSiteAppProfileRequest,
+    cancel: &CancellationToken,
+) -> Result<SiteServiceResult, Error> {
+    run_admitted(
+        ctx,
+        SET_SITE_APP_PROFILE_OPERATION,
+        req.request_id,
+        req.idempotency_key.as_ref(),
+        || {
+            let root = ManagedRoot::open(ctx.site_services_root).map_err(Error::Io)?;
+            let caddy_rel = service_rel(&req.runtime_id, &req.domain, "Caddyfile");
+            let ini_rel = service_rel(&req.runtime_id, &req.domain, APP_INI_FILE);
+            if read_optional(&root, &caddy_rel)?.is_none() {
+                return Err(Error::SiteConfigMissing);
+            }
+            let prior = read_optional(&root, &ini_rel)?;
+            let new = req.profile.map(site_app_ini);
+            if prior.as_deref() == new.as_deref().map(str::as_bytes) {
+                // Already as asked: no write, no restart.
+                return Ok(site_result(&req.runtime_id, &req.domain));
+            }
+            let put = |bytes: Option<&[u8]>| -> io::Result<()> {
+                match bytes {
+                    Some(bytes) => root.write_atomic(&ini_rel, bytes),
+                    None => match root.remove_file(&ini_rel) {
+                        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+                        _ => Ok(()),
+                    },
+                }
+            };
+            put(new.as_deref().map(str::as_bytes)).map_err(Error::Io)?;
+            let cdir = container_dir(&req.domain);
+            let outcome = restart_service(ctx, &req.runtime_id, &cdir, cancel)
+                .and_then(|()| site_probe(ctx, &req.runtime_id, req.port, cancel));
+            match outcome {
+                Ok(()) => Ok(site_result(&req.runtime_id, &req.domain)),
+                Err(_down) => {
+                    if put(prior.as_deref()).is_err()
+                        || restart_service(ctx, &req.runtime_id, &cdir, cancel).is_err()
+                    {
+                        return Err(Error::SiteRecoveryFailed);
+                    }
+                    Err(Error::SiteRolledBack)
+                }
+            }
+        },
+    )
+}
+
 /// What `activate_locked` swaps in. Borrowed from either
 /// `stack.activateSiteConfig` or `site.setErrorPages`, which both run the
 /// same validate, swap, restart, probe and roll back sequence.
