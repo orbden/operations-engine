@@ -1,10 +1,12 @@
-//! `node.build`: one reproducible npm build in a throw-away container.
+//! `node.build`: one reproducible Node build in a throw-away container.
 //!
 //! The project is copied into an engine-private staging directory (without
 //! `node_modules`, `.git`, `.env*` and `.npmrc`, so the build never sees the
 //! site's secrets) and built there by two fixed container runs of a
-//! digest-pinned Node image: `npm ci` (the lockfile is required) and
-//! `npm run <script>`. The container runs as the site's non-root identity with
+//! digest-pinned Node image: the lockfile install and the build script,
+//! each with the project's own package manager (`npm ci`, `pnpm install
+//! --frozen-lockfile` or `yarn install --frozen-lockfile`, found by the
+//! lockfile; see `node_pm`). The container runs as the site's non-root identity with
 //! all capabilities dropped, a read-only root filesystem, memory and PID
 //! limits and no Docker socket. Project scripts are untrusted application
 //! code: the staging copy is the only writable project path they can reach.
@@ -21,6 +23,7 @@ use crate::{
     error::ErrorCode,
     filesystem::ManagedRoot,
     mutation::preflight,
+    node_pm::PackageManager,
     process::{
         self, CancellationToken, ProcessLimits, ProcessOutput, ProcessRequest, ProcessTermination,
         SubprocessDiagnostics,
@@ -84,7 +87,7 @@ struct Plan {
     #[serde(default)]
     ignore_scripts: bool,
     /// Keep the output directory under its own path together with
-    /// `package.json` and `package-lock.json`, so a server application can be
+    /// `package.json` and the lockfile, so a server application can be
     /// started from the artifact (`node.deployApp` installs its production
     /// dependencies from the lockfile). Default: the artifact is the contents
     /// of the output directory, for static publishing.
@@ -480,6 +483,16 @@ pub(crate) fn sandbox_run_args(
         "npm_config_cache=/tmp/.npm".into(),
         "--env".into(),
         "npm_config_update_notifier=false".into(),
+        // pnpm (through corepack) and yarn keep their caches under /tmp too:
+        // the root file system is read-only.
+        "--env".into(),
+        "COREPACK_HOME=/tmp/.corepack".into(),
+        "--env".into(),
+        "COREPACK_ENABLE_DOWNLOAD_PROMPT=0".into(),
+        "--env".into(),
+        "npm_config_store_dir=/tmp/.pnpm-store".into(),
+        "--env".into(),
+        "YARN_CACHE_FOLDER=/tmp/.yarn".into(),
         image.to_owned(),
     ]
 }
@@ -611,11 +624,8 @@ fn build(
             .map_err(|_| Error::Project("the project root cannot be opened"))?,
     )
     .map_err(|_| Error::Project("the project root cannot be opened"))?;
-    if !source.exists(&rel("package-lock.json")) {
-        return Err(Error::Project(
-            "package-lock.json is required (the build installs from the lockfile)",
-        ));
-    }
+    let manager =
+        PackageManager::detect(&source).map_err(|error| Error::Project(error.message()))?;
 
     let work_rel = rel(format!("work/{id}"));
     scope.create_dir_all(&work_rel).map_err(Error::Io)?;
@@ -645,13 +655,9 @@ fn build(
     }
 
     let work_dir = scope_dir.join("work").join(id.to_string());
-    let mut install: Vec<&str> = vec!["npm", "ci", "--no-audit", "--no-fund"];
-    if req.ignore_scripts {
-        install.push("--ignore-scripts");
-    }
     for (phase, argv) in [
-        ("npm ci", install),
-        ("the build script", vec!["npm", "run", req.script.as_str()]),
+        (manager.install_phase(), manager.install(req.ignore_scripts)),
+        ("the build script", manager.run_script(&req.script)),
     ] {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -661,7 +667,7 @@ fn build(
             req,
             &work_dir,
             &phase.replace(' ', "-"),
-            &argv,
+            &argv.iter().map(String::as_str).collect::<Vec<_>>(),
             log,
             cancel,
         )?;
@@ -690,7 +696,7 @@ fn build(
         // production install needs.
         let target = descend_create(&artifact, &req.output_dir)?;
         copy_tree(&output, &target, &rules, 0, &mut taken)?;
-        for name in ["package.json", "package-lock.json"] {
+        for name in ["package.json", manager.lockfile()] {
             let path = rel(name);
             let mut input = work.open_regular_read(&path).map_err(Error::Io)?;
             let mut out = artifact
@@ -941,8 +947,8 @@ printf '%s\n' "$*" >> '{log}'
 src=$(printf '%s' "$*" | sed -n 's/.*source=\([^,]*\),.*/\1/p')
 case "$*" in
   "rm -f"*) exit 0 ;;
-  *" npm ci"*) [ -n "$src" ] && ls -A "$src" > '{listing}'; case "{fail}" in ci) echo "ci boom"; exit 1;; esac ;;
-  *" npm run build"*)
+  *" npm ci"*|*" corepack pnpm install"*|*" yarn install"*) [ -n "$src" ] && ls -A "$src" > '{listing}'; case "{fail}" in ci) echo "ci boom"; exit 1;; esac ;;
+  *" npm run build"*|*" corepack pnpm run build"*|*" yarn run build"*)
     case "{fail}" in build) echo "build boom"; exit 1;; nooutput) exit 0;; esac
     mkdir -p "$src/dist/assets" && echo hi > "$src/dist/index.html" && echo js > "$src/dist/assets/a.js" ;;
 esac
@@ -1224,7 +1230,11 @@ exit 0
         for (what, message) in [
             (
                 "lock",
-                "package-lock.json is required (the build installs from the lockfile)",
+                "a lockfile is required (package-lock.json, pnpm-lock.yaml or yarn.lock)",
+            ),
+            (
+                "two locks",
+                "more than one lockfile exists; keep only the one of the project's package manager",
             ),
             (
                 "script",
@@ -1237,6 +1247,9 @@ exit 0
             let f = fixture("");
             match what {
                 "lock" => fs::remove_file(f.project.join("package-lock.json")).unwrap(),
+                "two locks" => {
+                    fs::write(f.project.join("yarn.lock"), "# yarn lockfile v1\n").unwrap()
+                }
                 "script" => fs::write(
                     f.project.join("package.json"),
                     r#"{"scripts":{"lint":"x"}}"#,
@@ -1259,6 +1272,58 @@ exit 0
             );
             assert!(calls(f.dir.path()).is_empty(), "{what}: no container");
         }
+    }
+
+    #[test]
+    fn pnpm_and_yarn_projects_build_with_their_own_tool() {
+        for (lock, text, install, run_build, label) in [
+            (
+                "pnpm-lock.yaml",
+                "lockfileVersion: '9.0'\n",
+                " corepack pnpm install --frozen-lockfile",
+                " corepack pnpm run build",
+                "pnpm install",
+            ),
+            (
+                "yarn.lock",
+                "# yarn lockfile v1\n",
+                " yarn install --frozen-lockfile --non-interactive",
+                " yarn run build",
+                "yarn install",
+            ),
+        ] {
+            let f = fixture("");
+            fs::remove_file(f.project.join("package-lock.json")).unwrap();
+            fs::write(f.project.join(lock), text).unwrap();
+            let result = run(&f, r#","server":true"#, ID, None).unwrap();
+            let recorded = calls(f.dir.path());
+            assert!(recorded[0].ends_with(install), "{lock}: {}", recorded[0]);
+            assert!(recorded[1].ends_with(run_build), "{lock}: {}", recorded[1]);
+            assert!(
+                recorded.iter().all(|call| !call.contains(" npm ")),
+                "{lock}"
+            );
+            // The artifact carries the project's own lockfile.
+            let artifact = PathBuf::from(&result.artifact_path);
+            assert!(artifact.join(lock).is_file(), "{lock}");
+            assert!(!artifact.join("package-lock.json").exists(), "{lock}");
+            let log = fs::read_to_string(&result.log_path).unwrap();
+            assert!(
+                log.contains(&format!("== {} ==", label.replace(' ', "-"))),
+                "{lock}"
+            );
+        }
+    }
+
+    #[test]
+    fn yarn_berry_is_refused_before_any_container() {
+        let f = fixture("");
+        fs::remove_file(f.project.join("package-lock.json")).unwrap();
+        fs::write(f.project.join("yarn.lock"), "__metadata:\n  version: 8\n").unwrap();
+        let (code, message) = run(&f, "", ID, None).unwrap_err().protocol();
+        assert_eq!(code, ErrorCode::InvalidInput);
+        assert!(message.starts_with("Yarn Berry"), "{message}");
+        assert!(calls(f.dir.path()).is_empty());
     }
 
     #[test]

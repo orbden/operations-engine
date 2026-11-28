@@ -1404,16 +1404,25 @@ four plain components; `memoryMb` is 512-8192 (default 2048), `timeoutSecs` is
 60-3600 per container run (default 900); `ignoreScripts` adds
 `--ignore-scripts` to the install; `server` (default `false`) keeps the output
 directory under its own path (`dist/...`) next to `package.json` and
-`package-lock.json` in the artifact, which is the layout `node.deployApp`
+the project's lockfile in the artifact, which is the layout `node.deployApp`
 needs, instead of making the artifact the contents of the output directory.
 
-The project needs `package.json` and `package-lock.json` (`invalid_input`
-otherwise). It is copied into an engine-private staging directory, without
+The project needs `package.json` and exactly one lockfile (`invalid_input`
+otherwise), and the lockfile names the package manager: `package-lock.json` is
+npm, `pnpm-lock.yaml` is pnpm (run as `corepack pnpm`, the corepack of the Node
+image) and `yarn.lock` is Yarn classic. Two lockfiles are refused instead of
+guessed, and so is Yarn Berry (a `yarn.lock` with a `__metadata:` header, whose
+Plug'n'Play layout has no `node_modules`). `projectRoot` may be a folder below
+the site's root (a project in a subfolder); the artifacts are kept per project
+root. It is copied into an engine-private staging directory, without
 `node_modules`, `.git`, `.npmrc` and `.env*`, so the build never sees the site's
 credentials. A symlink, special file or hard-linked file, a tree deeper than 32
 levels, more than 50000 entries or 1 GiB is refused. The site's own files are
-never written. Two fixed container runs follow, each without a shell: `npm ci
---no-audit --no-fund` and `npm run <script>`. They run as the site identity
+never written. Two fixed container runs follow, each without a shell: the install from the
+lockfile (`npm ci --no-audit --no-fund`, `corepack pnpm install
+--frozen-lockfile` or `yarn install --frozen-lockfile --non-interactive`) and
+the script (`npm run`, `corepack pnpm run` or `yarn run <script>`); the tools'
+caches live under `/tmp`. They run as the site identity
 with all capabilities dropped, `no-new-privileges`, a read-only root file
 system (a `/tmp` tmpfs and the staging directory are writable), a memory limit
 with swap equal to it, a PID limit and reduced CPU shares; there is no Docker
@@ -1440,11 +1449,16 @@ result without building again. Publishing a static artifact is
 
 One container per Node.js application. `node deploy-app --request-file <root-owned
 JSON> --request-id <uuid> [--idempotency-key <key>]` takes `{domain, projectRoot,
-buildId, image, uid, gid, adapter, memoryMb?, env?, secretEnv?}`; unknown fields
-are rejected. `buildId` names a `node.build` artifact of `projectRoot` made with
-`server: true`: the engine derives the artifact path itself and refuses an
-artifact that lacks `package.json`, `package-lock.json` or the adapter's entry
-file. `adapter` is `astro-node` (`@astrojs/node` standalone, entry
+buildId | releaseId, image, uid, gid, adapter, memoryMb?, env?, secretEnv?}`;
+unknown fields are rejected. `buildId` names a `node.build` artifact of
+`projectRoot` made with `server: true`: the engine derives the artifact path
+itself and refuses an artifact that lacks `package.json`, one lockfile or the
+adapter's entry file. `releaseId` (instead of `buildId`; exactly one of the two)
+is a manual rollback: it names a release the engine still keeps for the domain
+(`releases` of `node.appStatus`), which starts again as it is, without a build or
+an install, with the given image, limits and environment; a release that is gone
+is `invalid_input`, and a rollback that fails leaves the live release and the
+kept one in place. `adapter` is `astro-node` (`@astrojs/node` standalone, entry
 `dist/server/entry.mjs`); the command is fixed by the adapter and never comes
 from a request. `image` is a digest-pinned reference as for `node.build`.
 `memoryMb` is 256-4096 (default 512). `env` and `secretEnv` map names
@@ -1455,8 +1469,9 @@ without control characters, at most 32 each and no name in both.
 The engine checks that the ingress container is running and that the domain's
 route is absent or already this operation's route (a route of another kind, a
 disabled or a parked route is `conflict`). It copies the artifact into a release
-directory, installs the production dependencies from the lockfile with `npm ci
---omit=dev` in the sandbox of `node.build`, creates the application's network
+directory, installs the production dependencies from the lockfile with the project's own
+tool (`npm ci --omit=dev`, `corepack pnpm install --frozen-lockfile --prod` or
+`yarn install --frozen-lockfile --production`) in the sandbox of `node.build`, creates the application's network
 and joins the ingress to it, moves a previous container aside and starts the
 application: the release is mounted read-only at `/app`, a data directory at
 `/data`; the container runs as the given non-root identity with all capabilities
@@ -1495,7 +1510,9 @@ publishes nothing. A route written by an earlier engine (proxy only, or only
 `true` for it until the next deploy replaces it.
 
 `node app-status --domain <domain>` is read-only: `{domain, state, health,
-restartCount, startedAt, image, releaseId, routeManaged}`. `state` is the
+restartCount, startedAt, image, releaseId, routeManaged, releases}`; `releases`
+lists the kept release ids, newest first (the engine keeps the live one and the
+one before it), and is `null` when the directory cannot be read. `state` is the
 container state or `absent`; a value the engine could not read is `null`, and a
 docker failure other than "no such container" is an error, never `absent`.
 `node restart-app` (`{domain}`) restarts the container and waits for the health

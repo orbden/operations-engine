@@ -31,6 +31,7 @@ use crate::{
         skip_nothing,
     },
     node_ingress::{self, APP_PORT},
+    node_pm::PackageManager,
     process::{
         self, CancellationToken, ProcessLimits, ProcessOutput, ProcessRequest,
         SubprocessDiagnostics,
@@ -123,7 +124,14 @@ impl Adapter {
 struct DeployPlan {
     domain: String,
     project_root: String,
-    build_id: String,
+    /// A `node.build` artifact to release. Exactly one of `build_id` and
+    /// `release_id` is given.
+    #[serde(default)]
+    build_id: Option<String>,
+    /// A release this engine kept from an earlier deploy: started again
+    /// without a build or an install (a manual rollback).
+    #[serde(default)]
+    release_id: Option<String>,
     image: String,
     uid: u32,
     gid: u32,
@@ -136,10 +144,19 @@ struct DeployPlan {
     secret_env: BTreeMap<String, String>,
 }
 
+/// Where a deploy takes its files from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeploySource {
+    /// A new release made from the artifact of a build.
+    Build(RequestId),
+    /// A release that already exists on the host.
+    Release(RequestId),
+}
+
 pub struct DeployRequest {
     pub domain: Domain,
     project_root: PathBuf,
-    build_id: RequestId,
+    source: DeploySource,
     image: ImageReference,
     uid: u32,
     gid: u32,
@@ -235,10 +252,17 @@ impl DeployRequest {
             return Err(RequestError::InvalidEnv);
         }
         let (request_id, idempotency_key) = ids(request_id, key)?;
+        let parse_id =
+            |value: &str| RequestId::parse(value).map_err(|_| RequestError::InvalidBuildId);
+        let source = match (&plan.build_id, &plan.release_id) {
+            (Some(build), None) => DeploySource::Build(parse_id(build)?),
+            (None, Some(release)) => DeploySource::Release(parse_id(release)?),
+            _ => return Err(RequestError::InvalidBuildId),
+        };
         Ok(Self {
             domain,
             project_root,
-            build_id: RequestId::parse(&plan.build_id).map_err(|_| RequestError::InvalidBuildId)?,
+            source,
             image,
             uid: plan.uid,
             gid: plan.gid,
@@ -337,6 +361,9 @@ pub struct AppStatus {
     pub release_id: Option<String>,
     /// Whether the domain's route is exactly the engine's Node route.
     pub route_managed: Option<bool>,
+    /// The releases kept on the host, newest first: what a rollback can
+    /// start. `None` when the directory could not be read.
+    pub releases: Option<Vec<String>>,
 }
 
 // ───────────────────────────── errors ─────────────────────────────
@@ -878,7 +905,7 @@ fn run_args(
         "--label".into(),
         format!("{LABEL_APP}={}", req.domain),
         "--label".into(),
-        format!("{LABEL_RELEASE}={}", req.request_id),
+        format!("{LABEL_RELEASE}={release}"),
         "--mount".into(),
         format!(
             "type=bind,source={},target=/app,readonly",
@@ -1063,6 +1090,77 @@ fn carry_hashed(previous: &ManagedRoot, to: &ManagedRoot) {
     }
 }
 
+/// Makes a new release from a build artifact: copies it and installs the
+/// production dependencies with the project's package manager in a sandbox.
+fn install_release(
+    ctx: &Context<'_>,
+    req: &DeployRequest,
+    scope: &Scope,
+    progress: &mut Progress,
+    artifact: &ManagedRoot,
+    manager: PackageManager,
+    cancel: &CancellationToken,
+) -> Result<(String, ManagedRoot), Error> {
+    let id = req.request_id;
+    let release_id = id.to_string();
+    let release_rel = rel(format!("releases/{release_id}"));
+    scope.root.create_dir(&release_rel).map_err(Error::Io)?;
+    progress.release = true;
+    let owner = root_owner(req.uid, req.gid);
+    if let Some((uid, gid)) = owner {
+        scope
+            .root
+            .chown(&release_rel, uid, gid)
+            .map_err(Error::Io)?;
+    }
+    scope
+        .root
+        .set_mode(&release_rel, 0o755)
+        .map_err(Error::Io)?;
+    let release = scope
+        .root
+        .open_managed_dir(&release_rel)
+        .map_err(Error::Io)?;
+    let mut copied = Copied::default();
+    copy_tree(
+        artifact,
+        &release,
+        &CopyRules {
+            skip: skip_nothing,
+            owner,
+            max_entries: ARTIFACT_LIMITS.0,
+            max_bytes: ARTIFACT_LIMITS.1,
+        },
+        0,
+        &mut copied,
+    )
+    .map_err(|error| match error {
+        crate::node_build::Error::Io(io) => Error::Io(io),
+        _ => Error::Project("the build artifact cannot be copied"),
+    })?;
+    let release_dir = scope.dir.join("releases").join(&release_id);
+    let install_name = format!("wcp-node-install-{id}");
+    let mut install = sandbox_run_args(
+        &install_name,
+        (req.uid, req.gid),
+        req.memory_mb.max(1024),
+        release_dir
+            .to_str()
+            .ok_or(Error::Io(io::Error::other("path")))?,
+        req.image.as_str(),
+    );
+    install.extend(manager.install_production());
+    let output = docker(ctx, &install, INSTALL_TIMEOUT, cancel)?;
+    if !exited_ok(&output) {
+        docker_quiet(ctx, &argv(&["rm", "-f", &install_name]));
+        return Err(Error::Docker {
+            step: manager.install_phase(),
+            diagnostics: SubprocessDiagnostics::from_output(ctx.docker_program, &output),
+        });
+    }
+    Ok((release_id, release))
+}
+
 fn deploy_steps(
     ctx: &Context<'_>,
     req: &DeployRequest,
@@ -1076,22 +1174,31 @@ fn deploy_steps(
     let previous_name = format!("{container}-previous");
     let network = node_ingress::network_name(domain);
 
-    // The artifact of the build, by id: no path comes from the request.
-    let hash = crate::transaction::resource_lock::canonical_hash(&req.project_root);
-    let artifact = ctx
-        .engine_state
-        .open_managed_dir(&rel(format!(
-            "node-build/{hash}/artifacts/{}",
-            req.build_id
-        )))
-        .map_err(|_| Error::Project("the build artifact does not exist"))?;
-    for needed in ["package.json", "package-lock.json", req.adapter.entry()] {
-        if !artifact.exists(&rel(needed)) {
-            return Err(Error::Project(
-                "the build artifact is not a server build (build it with server: true)",
-            ));
+    // The files, by id: no path comes from the request. A build artifact
+    // becomes a new release below; a kept release is started as it is.
+    let (artifact, manager) = match req.source {
+        DeploySource::Build(build_id) => {
+            let hash = crate::transaction::resource_lock::canonical_hash(&req.project_root);
+            let artifact = ctx
+                .engine_state
+                .open_managed_dir(&rel(format!("node-build/{hash}/artifacts/{build_id}")))
+                .map_err(|_| Error::Project("the build artifact does not exist"))?;
+            let manager = PackageManager::detect(&artifact).map_err(|_| {
+                Error::Project(
+                    "the build artifact is not a server build (build it with server: true)",
+                )
+            })?;
+            for needed in ["package.json", req.adapter.entry()] {
+                if !artifact.exists(&rel(needed)) {
+                    return Err(Error::Project(
+                        "the build artifact is not a server build (build it with server: true)",
+                    ));
+                }
+            }
+            (Some(artifact), Some(manager))
         }
-    }
+        DeploySource::Release(_) => (None, None),
+    };
 
     // The ingress must be up, and the domain's route must be free or ours.
     match inspect(ctx, INGRESS_CONTAINER)? {
@@ -1118,8 +1225,8 @@ fn deploy_steps(
     }
 
     // 1. The release: the artifact, copied, with production dependencies
-    //    installed from the lockfile in a sandbox. The data directory belongs
-    //    to the application's identity.
+    //    installed from the lockfile in a sandbox (or a kept release, as it
+    //    is). The data directory belongs to the application's identity.
     if let Some((uid, gid)) = root_owner(req.uid, req.gid) {
         scope
             .root
@@ -1130,68 +1237,26 @@ fn deploy_steps(
         .root
         .set_mode(&rel("data"), 0o750)
         .map_err(Error::Io)?;
-    let release_id = id.to_string();
-    let release_rel = rel(format!("releases/{release_id}"));
-    scope.root.create_dir(&release_rel).map_err(Error::Io)?;
-    progress.release = true;
-    let owner = root_owner(req.uid, req.gid);
-    if let Some((uid, gid)) = owner {
-        scope
-            .root
-            .chown(&release_rel, uid, gid)
-            .map_err(Error::Io)?;
-    }
-    scope
-        .root
-        .set_mode(&release_rel, 0o755)
-        .map_err(Error::Io)?;
-    let release = scope
-        .root
-        .open_managed_dir(&release_rel)
-        .map_err(Error::Io)?;
-    let mut copied = Copied::default();
-    copy_tree(
-        &artifact,
-        &release,
-        &CopyRules {
-            skip: skip_nothing,
-            owner,
-            max_entries: ARTIFACT_LIMITS.0,
-            max_bytes: ARTIFACT_LIMITS.1,
-        },
-        0,
-        &mut copied,
-    )
-    .map_err(|error| match error {
-        crate::node_build::Error::Io(io) => Error::Io(io),
-        _ => Error::Project("the build artifact cannot be copied"),
-    })?;
-    let release_dir = scope.dir.join("releases").join(&release_id);
-    let install_name = format!("wcp-node-install-{id}");
-    let mut install = sandbox_run_args(
-        &install_name,
-        (req.uid, req.gid),
-        req.memory_mb.max(1024),
-        release_dir
-            .to_str()
-            .ok_or(Error::Io(io::Error::other("path")))?,
-        req.image.as_str(),
-    );
-    install.extend(argv(&[
-        "npm",
-        "ci",
-        "--omit=dev",
-        "--no-audit",
-        "--no-fund",
-    ]));
-    let output = docker(ctx, &install, INSTALL_TIMEOUT, cancel)?;
-    if !exited_ok(&output) {
-        docker_quiet(ctx, &argv(&["rm", "-f", &install_name]));
-        return Err(Error::Docker {
-            step: "npm ci",
-            diagnostics: SubprocessDiagnostics::from_output(ctx.docker_program, &output),
-        });
-    }
+    let (release_id, release) = match (&artifact, manager) {
+        (Some(artifact), Some(manager)) => {
+            install_release(ctx, req, scope, progress, artifact, manager, cancel)?
+        }
+        _ => {
+            let DeploySource::Release(kept) = req.source else {
+                return Err(Error::Project("the release source is not usable"));
+            };
+            let release = scope
+                .root
+                .open_managed_dir(&rel(format!("releases/{kept}")))
+                .map_err(|_| Error::Project("the release does not exist (it was removed)"))?;
+            for needed in ["package.json", req.adapter.entry()] {
+                if !release.exists(&rel(needed)) {
+                    return Err(Error::Project("the release is incomplete"));
+                }
+            }
+            (kept.to_string(), release)
+        }
+    };
 
     // 2. The application's own network, joined by the ingress.
     let exists = docker(
@@ -1297,7 +1362,8 @@ fn deploy_steps(
     prune_releases(scope, &release_id);
     Ok(DeployResult {
         domain: domain.to_string(),
-        release_id: id,
+        release_id: RequestId::parse(&release_id)
+            .map_err(|_| Error::Project("the release id is not usable"))?,
         container,
         network,
         image: req.image.as_str().to_owned(),
@@ -1410,6 +1476,26 @@ fn typed<T: serde::de::DeserializeOwned>(
 
 // ───────────────────────────── status / restart / remove ─────────────────────────────
 
+/// The release ids on disk, newest first (by modification time).
+fn kept_releases(ctx: &Context<'_>, domain: &Domain) -> Option<Vec<String>> {
+    let dir = ctx
+        .engine_state
+        .open_managed_dir(&rel(format!("node-app/{domain}/releases")))
+        .ok()?;
+    let mut entries: Vec<(SystemTime, String)> = dir
+        .child_entries()
+        .ok()?
+        .into_iter()
+        .filter_map(|child| {
+            let name = child.name.to_str()?.to_owned();
+            RequestId::parse(&name).ok()?;
+            Some((dir.modified(&rel(name.as_str())).ok()?, name))
+        })
+        .collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    Some(entries.into_iter().map(|(_, name)| name).collect())
+}
+
 pub fn status(ctx: &Context<'_>, domain: &Domain) -> Result<AppStatus, Error> {
     let container = node_ingress::container_name(domain);
     let facts = inspect(ctx, &container)?;
@@ -1418,6 +1504,7 @@ pub fn status(ctx: &Context<'_>, domain: &Domain) -> Result<AppStatus, Error> {
             .as_deref()
             .is_some_and(|text| node_ingress::is_managed(domain, text))
     });
+    let releases = kept_releases(ctx, domain);
     Ok(match facts {
         None => AppStatus {
             domain: domain.to_string(),
@@ -1428,6 +1515,7 @@ pub fn status(ctx: &Context<'_>, domain: &Domain) -> Result<AppStatus, Error> {
             image: None,
             release_id: None,
             route_managed,
+            releases,
         },
         Some(facts) => AppStatus {
             domain: domain.to_string(),
@@ -1438,6 +1526,7 @@ pub fn status(ctx: &Context<'_>, domain: &Domain) -> Result<AppStatus, Error> {
             image: Some(facts.image),
             release_id: (!facts.release.is_empty()).then_some(facts.release),
             route_managed,
+            releases,
         },
     })
 }
@@ -1638,7 +1727,7 @@ case "$1" in
     echo "Error: No such container: $last" >&2; exit 1 ;;
   run)
     case "$*" in
-      *"npm ci"*) [ -f "$C/fail-install" ] && exit 1; exit 0 ;;
+      *"npm ci"*|*"corepack pnpm install"*|*"yarn install"*) [ -f "$C/fail-install" ] && exit 1; exit 0 ;;
       *"--detach"*)
         [ -f "$C/fail-run" ] && exit 1
         health=healthy; [ -f "$C/unhealthy" ] && health=unhealthy
@@ -1883,6 +1972,121 @@ exit 0"#,
         let replay = deploy_with(&h, "", ID2, Some("k1")).unwrap();
         assert_eq!(replay.release_id, result.release_id);
         assert_eq!(h.calls().len(), before, "a replay must not touch docker");
+    }
+
+    fn rollback_plan(release: &str, extra: &str) -> String {
+        format!(
+            r#"{{"domain":"{DOMAIN}","projectRoot":"{ROOT}","releaseId":"{release}","image":"docker.io/library/node@sha256:{DIGEST}","uid":1000,"gid":1000,"adapter":"astro-node"{extra}}}"#
+        )
+    }
+
+    fn rollback_to(h: &Host, release: &str, id: &str) -> Result<DeployResult, Error> {
+        let request = DeployRequest::parse(&rollback_plan(release, ""), id, None).unwrap();
+        h.run(|ctx| deploy(ctx, &request, &CancellationToken::default()))
+    }
+
+    #[test]
+    fn a_release_is_named_by_exactly_one_of_build_and_release() {
+        let both = plan(&format!(r#","releaseId":"{ID}""#));
+        let neither = plan("").replace(&format!(r#""buildId":"{BUILD}","#), "");
+        for (json, ok) in [
+            (plan(""), true),
+            (rollback_plan(ID, ""), true),
+            (both, false),
+            (neither, false),
+            (rollback_plan("nope", ""), false),
+        ] {
+            assert_eq!(DeployRequest::parse(&json, ID2, None).is_ok(), ok, "{json}");
+        }
+    }
+
+    #[test]
+    fn a_manual_rollback_starts_a_kept_release_without_build_or_install() {
+        let h = host();
+        deploy_with(&h, "", ID, None).unwrap();
+        deploy_with(&h, "", ID2, None).unwrap();
+        let before = h.calls().len();
+        let result = rollback_to(&h, ID, ID3).unwrap();
+        assert_eq!(result.release_id.to_string(), ID);
+        // The live container runs the older release again.
+        assert!(
+            h.container(&name())
+                .unwrap()
+                .trim_end()
+                .ends_with(&format!("|{ID}"))
+        );
+        assert!(h.container(&format!("{}-previous", name())).is_none());
+        // No install ran, and the new request id made no release directory.
+        let calls = h.calls()[before..].join("\n");
+        assert!(
+            !calls.contains("npm ci") && calls.contains("--detach"),
+            "{calls}"
+        );
+        let releases = h.state.join(format!("node-app/{DOMAIN}/releases"));
+        assert!(releases.join(ID).is_dir() && releases.join(ID2).is_dir());
+        assert!(!releases.join(ID3).exists());
+        // The status lists what a rollback can start, and the live release.
+        let status = h
+            .run(|ctx| status(ctx, &Domain::parse(DOMAIN).unwrap()))
+            .unwrap();
+        assert_eq!(status.release_id.as_deref(), Some(ID));
+        let kept = status.releases.unwrap();
+        assert_eq!(kept.len(), 2);
+        assert!(kept.contains(&ID.to_owned()) && kept.contains(&ID2.to_owned()));
+    }
+
+    #[test]
+    fn a_rollback_that_fails_keeps_the_live_release_and_the_kept_one() {
+        let h = host();
+        deploy_with(&h, "", ID, None).unwrap();
+        deploy_with(&h, "", ID2, None).unwrap();
+        h.mark("unhealthy");
+        assert!(rollback_to(&h, ID, ID3).is_err());
+        let _ = fs::remove_file(h.control("unhealthy"));
+        assert!(
+            h.container(&name())
+                .unwrap()
+                .trim_end()
+                .ends_with(&format!("|{ID2}"))
+        );
+        let releases = h.state.join(format!("node-app/{DOMAIN}/releases"));
+        assert!(
+            releases.join(ID).is_dir(),
+            "the kept release survives a failed rollback"
+        );
+        // A release that is gone, or was never there, is refused up front.
+        let (code, message) = rollback_to(&h, ID3, "123e4567-e89b-12d3-a456-4266141740bb")
+            .unwrap_err()
+            .protocol();
+        assert_eq!(code, ErrorCode::InvalidInput);
+        assert!(
+            message.starts_with("the release does not exist"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_pnpm_or_yarn_artifact_installs_with_its_own_tool() {
+        for (lock, installs) in [
+            (
+                "pnpm-lock.yaml",
+                "corepack pnpm install --frozen-lockfile --prod",
+            ),
+            (
+                "yarn.lock",
+                "yarn install --frozen-lockfile --non-interactive --production",
+            ),
+        ] {
+            let h = host();
+            let hash = crate::transaction::resource_lock::canonical_hash(Path::new(ROOT));
+            let artifact = h.state.join(format!("node-build/{hash}/artifacts/{BUILD}"));
+            fs::remove_file(artifact.join("package-lock.json")).unwrap();
+            fs::write(artifact.join(lock), "# yarn lockfile v1\n").unwrap();
+            deploy_with(&h, "", ID, None).unwrap();
+            let calls = h.calls().join("\n");
+            assert!(calls.contains(installs), "{lock}: {calls}");
+            assert!(!calls.contains("npm ci"), "{lock}");
+        }
     }
 
     #[test]
