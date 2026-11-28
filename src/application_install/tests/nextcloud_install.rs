@@ -107,7 +107,8 @@ fn installs_into_public_with_a_private_data_directory_beside_the_site() {
     assert_eq!(result.version, "35.0.3");
     assert_eq!(result.admin_url, "https://example.com/login");
     assert_eq!(f.names(""), ["public"]);
-    // The site's own `.user.ini` stays; Nextcloud's is not unpacked over it.
+    // Nextcloud's own `.user.ini` takes the place of the site's placeholder
+    // (the integrity check lists it).
     assert_eq!(
         f.names("public"),
         [
@@ -121,7 +122,7 @@ fn installs_into_public_with_a_private_data_directory_beside_the_site() {
     );
     assert_eq!(
         fs::read_to_string(f.site.join("public/.user.ini")).unwrap(),
-        "x"
+        "output_buffering=0\n"
     );
     let meta = fs::metadata(f.site.join("public/lib/base.php")).unwrap();
     assert_eq!((meta.uid(), meta.gid()), (f.uid, f.gid));

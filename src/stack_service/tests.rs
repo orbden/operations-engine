@@ -1472,3 +1472,170 @@ fn stop_data_service_accepts_only_a_postgres_line() {
     }
     assert!(StopDataServiceRequest::parse("postgres-19", "nope", None).is_err());
 }
+
+fn profile_req(profile: &str, id: &str) -> SetSiteAppProfileRequest {
+    SetSiteAppProfileRequest::parse("fp1-php83", "example.test", 9000, profile, id, None).unwrap()
+}
+
+fn app_ini_path(fixture: &Fixture) -> PathBuf {
+    fixture
+        .site_services_root
+        .as_path()
+        .join("fp1-php83/example.test")
+        .join(APP_INI_FILE)
+}
+
+#[test]
+fn app_profile_parses_only_known_names() {
+    for (value, ok) in [
+        ("nextcloud", true),
+        ("none", true),
+        ("", false),
+        ("Nextcloud", false),
+        ("nextcloud ", false),
+        ("wordpress", false),
+        ("nextcloud\n", false),
+    ] {
+        assert_eq!(AppProfile::parse(value).is_ok(), ok, "{value:?}");
+    }
+    assert_eq!(
+        SetSiteAppProfileRequest::parse("fp1-php83", "example.test", 0, "none", ID, None).err(),
+        Some(RequestError::InvalidPort)
+    );
+    assert_eq!(
+        SetSiteAppProfileRequest::parse("fp1-php83", "example.test", 9000, "x", ID, None).err(),
+        Some(RequestError::InvalidAppProfile)
+    );
+}
+
+#[test]
+fn nextcloud_profile_carries_what_its_user_ini_sets() {
+    let ini = site_app_ini(AppProfile::Nextcloud);
+    for line in [
+        "output_buffering = 0",
+        "upload_max_filesize = 16G",
+        "post_max_size = 16G",
+        "memory_limit = 512M",
+        "max_input_time = 3600",
+        "max_execution_time = 3600",
+    ] {
+        assert!(ini.lines().any(|l| l == line), "{line}");
+    }
+}
+
+#[test]
+fn set_app_profile_writes_the_ini_restarts_and_is_idempotent() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    write_site_service(
+        &fixture.ctx(),
+        &write_req(ID, None),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert!(!app_ini_path(&fixture).exists());
+    fs::write(&fixture.calls, "").unwrap();
+
+    set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("nextcloud", OTHER_ID),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.service_file("fp1-php83", "example.test", APP_INI_FILE),
+        site_app_ini(AppProfile::Nextcloud)
+    );
+    // The open_basedir file beside it is untouched.
+    assert!(
+        fixture
+            .service_file("fp1-php83", "example.test", "open-basedir.ini")
+            .contains("open_basedir = /var/www/example:")
+    );
+    let restarts = |f: &Fixture| f.calls().iter().filter(|c| c.contains("s6-svc -r")).count();
+    assert_eq!(restarts(&fixture), 1);
+
+    // The same profile again changes nothing and restarts nothing.
+    set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("nextcloud", "123e4567-e89b-12d3-a456-426614174002"),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert_eq!(restarts(&fixture), 1);
+
+    // `none` takes the file out.
+    set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("none", "123e4567-e89b-12d3-a456-426614174003"),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert!(!app_ini_path(&fixture).exists());
+    assert_eq!(restarts(&fixture), 2);
+}
+
+#[test]
+fn set_app_profile_needs_a_site_service() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    let error = set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("nextcloud", ID),
+        &CancellationToken::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::SiteConfigMissing));
+    assert!(!app_ini_path(&fixture).exists());
+}
+
+#[test]
+fn a_failed_probe_after_a_profile_change_puts_the_old_state_back() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let fixture = Fixture::new(0);
+    write_site_service(
+        &fixture.ctx(),
+        &write_req(ID, None),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    // First write succeeds, so there is a prior file to come back to.
+    set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("nextcloud", OTHER_ID),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let prior = fixture.service_file("fp1-php83", "example.test", APP_INI_FILE);
+    fixture.fail_on("http_code");
+    let error = set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("none", "123e4567-e89b-12d3-a456-426614174002"),
+        &CancellationToken::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::SiteRolledBack));
+    assert_eq!(
+        fixture.service_file("fp1-php83", "example.test", APP_INI_FILE),
+        prior
+    );
+
+    // A first-time write that fails leaves no file behind.
+    let _ = fs::remove_file(app_ini_path(&fixture));
+    let error = set_site_app_profile(
+        &fixture.ctx(),
+        &profile_req("nextcloud", "123e4567-e89b-12d3-a456-426614174004"),
+        &CancellationToken::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, Error::SiteRolledBack));
+    assert!(!app_ini_path(&fixture).exists());
+}
+
+#[test]
+fn the_run_script_scans_the_directory_that_holds_the_app_ini() {
+    let run = site_run_script(10123, 10123, "/etc/wcp/site-services/example.test");
+    assert!(run.contains(
+        "PHP_INI_SCAN_DIR=\"/usr/local/etc/php/conf.d:/etc/wcp/site-services/example.test\""
+    ));
+}

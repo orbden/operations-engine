@@ -44,6 +44,7 @@ pub enum RequestError {
     InvalidIdentity,
     InvalidRoot,
     InvalidProjectRoot,
+    InvalidAppProfile,
 }
 
 impl RequestError {
@@ -65,6 +66,7 @@ impl RequestError {
             Self::InvalidRoot => {
                 "root must be a plain absolute path under a content root, without spaces or dot segments"
             }
+            Self::InvalidAppProfile => "profile must be nextcloud or none",
             Self::InvalidProjectRoot => {
                 "project-root must be a plain absolute path under a content root that is the root or contains it"
             }

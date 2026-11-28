@@ -218,6 +218,7 @@ fn capabilities_describe_only_implemented_operations() {
             "stack.flushFpc",
             "stack.writeSiteService",
             "stack.activateSiteConfig",
+            "stack.setSiteAppProfile",
             "stack.removeSiteService",
             "docker.prune",
             "docker.containerAction",

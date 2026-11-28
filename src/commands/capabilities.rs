@@ -277,6 +277,7 @@ pub const OPERATIONS: &[&str] = &[
     "stack.flushFpc",
     "stack.writeSiteService",
     "stack.activateSiteConfig",
+    "stack.setSiteAppProfile",
     "stack.removeSiteService",
     "docker.prune",
     "docker.containerAction",

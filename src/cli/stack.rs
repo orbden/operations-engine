@@ -301,6 +301,25 @@ pub enum StackCommand {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Write (`nextcloud`) or take out (`none`) a site's `app-php.ini`, the
+    /// application's PHP settings that FrankenPHP does not read from a
+    /// `.user.ini`, restart the site process and probe it, restoring the
+    /// previous state if it never answers. Under the shared stack lock.
+    SetSiteAppProfile {
+        #[arg(long = "runtime-id")]
+        runtime_id: String,
+        #[arg(long = "domain")]
+        domain: String,
+        #[arg(long = "port")]
+        port: u16,
+        /// `nextcloud` or `none`.
+        #[arg(long = "profile")]
+        profile: String,
+        #[arg(long = "request-id")]
+        request_id: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+    },
     /// Run one fixed probe (`applicationToken`, `opcacheStatus` or
     /// `opcacheReset`) against a site through its runtime pool: a short-lived
     /// PHP file in the site's webroot is fetched with `curl` and removed.
@@ -362,6 +381,7 @@ impl StackCommand {
             Self::FlushFpc { .. } => "stack.flushFpc",
             Self::WriteSiteService { .. } => "stack.writeSiteService",
             Self::ActivateSiteConfig { .. } => "stack.activateSiteConfig",
+            Self::SetSiteAppProfile { .. } => "stack.setSiteAppProfile",
             Self::RemoveSiteService { .. } => "stack.removeSiteService",
             Self::ProbeSite { .. } => "site.probe",
             Self::SetErrorPages { .. } => "site.setErrorPages",

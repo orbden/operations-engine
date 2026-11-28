@@ -927,6 +927,17 @@ fn run_install(
         )?;
     }
 
+    if req.application == Application::Nextcloud {
+        // The release's own `.user.ini` replaces the site's placeholder (a
+        // plain file; a link or directory stays and is a conflict below).
+        let own = rel(format!("{staging}/{docroot}/.user.ini"))?;
+        let site = rel(format!("{docroot}/.user.ini"))?;
+        if root.symlink_metadata(&own).is_ok_and(|m| m.is_file())
+            && root.symlink_metadata(&site).is_ok_and(|m| m.is_file())
+        {
+            root.remove_file(&site).map_err(Error::Io)?;
+        }
+    }
     move_into_place(root, staging, docroot)?;
     let output = match req.application {
         Application::Statamic => {

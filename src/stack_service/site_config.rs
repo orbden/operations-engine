@@ -100,6 +100,48 @@ pub(crate) fn site_open_basedir_ini(project_root: &str) -> String {
     )
 }
 
+/// The file next to `open-basedir.ini` that carries an application's PHP
+/// settings. `PHP_INI_SCAN_DIR` (see `site_run_script`) makes the site's
+/// FrankenPHP child read every `*.ini` of the site's service directory;
+/// a `.user.ini` in the document root is not read by FrankenPHP.
+pub const APP_INI_FILE: &str = "app-php.ini";
+
+/// An application whose PHP settings differ from the panel's defaults and
+/// are applied through [`APP_INI_FILE`] instead of the application's own
+/// `.user.ini`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppProfile {
+    Nextcloud,
+}
+
+impl AppProfile {
+    /// `none` is `Ok(None)`: the file is taken out.
+    pub fn parse(value: &str) -> Result<Option<Self>, RequestError> {
+        match value {
+            "nextcloud" => Ok(Some(Self::Nextcloud)),
+            "none" => Ok(None),
+            _ => Err(RequestError::InvalidAppProfile),
+        }
+    }
+}
+
+/// The ini text of a profile. Fixed text with no caller value in it.
+/// Nextcloud: what its own `.user.ini` sets (output buffering off for
+/// streamed downloads, large uploads, a long upload window).
+pub(crate) fn site_app_ini(profile: AppProfile) -> String {
+    match profile {
+        AppProfile::Nextcloud => "; Managed by OrbDen - do not edit manually\n\
+; The settings of Nextcloud's own .user.ini, which FrankenPHP does not read.\n\
+upload_max_filesize = 16G\n\
+post_max_size = 16G\n\
+memory_limit = 512M\n\
+output_buffering = 0\n\
+max_input_time = 3600\n\
+max_execution_time = 3600\n"
+            .to_owned(),
+    }
+}
+
 /// The identity a site's config carries: its loopback port, document root
 /// and FrankenPHP worker settings. Shared by both site operations.
 pub struct SiteConfig {
@@ -285,6 +327,44 @@ pub struct SiteServiceResult {
     pub runtime_id: String,
     pub domain: String,
     pub completed_at_unix_secs: u64,
+}
+
+pub struct SetSiteAppProfileRequest {
+    pub runtime_id: RuntimeId,
+    pub domain: Domain,
+    /// The site process's loopback port, for the readiness probe.
+    pub port: u16,
+    /// `None` takes the file out.
+    pub profile: Option<AppProfile>,
+    pub request_id: RequestId,
+    pub idempotency_key: Option<IdempotencyKey>,
+}
+
+impl SetSiteAppProfileRequest {
+    pub fn parse(
+        runtime_id: &str,
+        domain: &str,
+        port: u16,
+        profile: &str,
+        request_id: &str,
+        key: Option<&str>,
+    ) -> Result<Self, RequestError> {
+        let runtime_id =
+            RuntimeId::parse(runtime_id).map_err(|_| RequestError::InvalidRuntimeId)?;
+        let domain = Domain::parse(domain).map_err(|_| RequestError::InvalidDomain)?;
+        if port == 0 {
+            return Err(RequestError::InvalidPort);
+        }
+        let (request_id, idempotency_key) = parse_ids(request_id, key)?;
+        Ok(Self {
+            runtime_id,
+            domain,
+            port,
+            profile: AppProfile::parse(profile)?,
+            request_id,
+            idempotency_key,
+        })
+    }
 }
 
 pub(super) fn site_result(runtime_id: &RuntimeId, domain: &Domain) -> SiteServiceResult {
